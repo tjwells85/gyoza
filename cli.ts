@@ -1,35 +1,36 @@
 #!/usr/bin/env bun
 
-import { generateEnv } from './src/commands/generate.ts';
-import { runUpdate } from './src/commands/update.ts';
+import { commands } from './src/commands/index.ts';
+import type { Command } from './src/types.ts';
 
-const command = process.argv[2];
+const printHelp = (cmds: Command[]): void => {
+  const pad = Math.max(...cmds.map(c => c.name.length), 'help'.length) + 2;
+  const lines = ['gyoza — hono-react-template tooling', '', 'Commands:'];
 
-switch (command) {
-  case 'env:generate':
-    await generateEnv();
-    break;
+  for (const cmd of cmds) {
+    lines.push(`  ${cmd.name.padEnd(pad)}${cmd.description}`);
+    for (const { flag, description } of cmd.flags ?? []) {
+      lines.push(`    ${flag.padEnd(pad)}${description}`);
+    }
+  }
 
-  case 'update':
-    await runUpdate(process.argv.slice(3));
-    break;
+  lines.push(`  ${'help'.padEnd(pad)}Show this message`);
+  console.log(lines.join('\n'));
+};
 
-  case 'help':
-  case undefined:
-    console.log(`
-gyoza — hono-react-template tooling
+const [, , commandName, ...args] = process.argv;
 
-Commands:
-  env:generate          Generate/update .env files from schema sources
-  update                Interactive dependency updater
-  update --latest       Update to latest versions
-  update -y             Skip confirmation prompt
-  help                  Show this message
-    `.trim());
-    break;
-
-  default:
-    console.error(`Unknown command: ${command}`);
-    console.error('Run "gyoza help" for available commands.');
-    process.exit(1);
+if (!commandName || commandName === 'help') {
+  printHelp(commands);
+  process.exit(0);
 }
+
+const command = commands.find(c => c.name === commandName);
+
+if (!command) {
+  console.error(`Unknown command: ${commandName}`);
+  console.error('Run "gyoza help" for available commands.');
+  process.exit(1);
+}
+
+await command.run(args);

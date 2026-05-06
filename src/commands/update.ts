@@ -1,6 +1,7 @@
 import { $ } from 'bun';
 import { join } from 'node:path';
 import type { PackageJson } from 'type-fest';
+import type { Command } from '../types.ts';
 
 type BunPackageJson = PackageJson & { catalog: Record<string, string> };
 
@@ -210,7 +211,7 @@ const runInstall = async (): Promise<void> => {
   await Bun.spawn(['bun', 'install'], { cwd: process.cwd(), stdout: 'inherit' }).exited;
 };
 
-export const runUpdate = async (args: string[]): Promise<void> => {
+const runUpdate = async (args: string[]): Promise<void> => {
   const latest = args.includes('--latest');
   const yes = args.includes('-y') || args.includes('--yes');
   const catalogMap = await getCatalogPackages();
@@ -230,4 +231,14 @@ export const runUpdate = async (args: string[]): Promise<void> => {
   await catalogifyWorkspaceDependencies(serverPackagePath, catalogMap);
   await updateRootCatalog(catalogMap);
   await runInstall();
+};
+
+export const updateCommand: Command = {
+  name: 'update',
+  description: 'Interactive dependency updater',
+  flags: [
+    { flag: '--latest', description: 'Update to latest versions (ignores semver range)' },
+    { flag: '-y, --yes', description: 'Skip confirmation prompt' },
+  ],
+  run: runUpdate,
 };
