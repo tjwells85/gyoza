@@ -90,6 +90,74 @@ gyoza update -y           # skip confirmation prompt
 
 ---
 
+### `build`
+
+Builds the monorepo for production. Runs in four phases:
+
+1. **Clean** — removes and recreates the `build/` directory
+2. **Pre steps** — any custom `gyoza.config.ts` steps with `phase: 'pre'`
+3. **Build** — compiles the frontend (`bun run --filter=frontend build`) and bundles the server (`Bun.build`)
+4. **Assemble** — copies `frontend/dist` → `build/client` and `server/.env` → `build/.env`
+5. **Post steps** — any custom `gyoza.config.ts` steps with `phase: 'post'` (default)
+
+```bash
+gyoza build
+```
+
+#### Extending the build with `gyoza.config.ts`
+
+Create `gyoza.config.ts` in your project root to inject custom build steps. Steps with `phase: 'pre'` run before the frontend/server build; `phase: 'post'` (the default) runs after assembly.
+
+```ts
+// gyoza.config.ts
+import type { BuildStep } from 'gyoza';
+
+export const buildSteps: BuildStep[] = [
+  {
+    name: 'Build Rust CLI',
+    phase: 'post',
+    run: async ({ buildDir }) => {
+      const proc = Bun.spawn(['cargo', 'build', '--release'], {
+        stdout: 'inherit',
+        stderr: 'inherit',
+      });
+      await proc.exited;
+      await Bun.write(`${buildDir}/mycli`, Bun.file('target/release/mycli'));
+    },
+  },
+];
+```
+
+If no `gyoza.config.ts` exists the build proceeds normally with no extra steps.
+
+---
+
+### `init:config`
+
+Scaffolds a `gyoza.config.ts` in the project root with a placeholder build step ready to edit. Exits with an error if the file already exists.
+
+```bash
+gyoza init:config
+```
+
+The generated file:
+
+```ts
+import type { BuildStep } from 'gyoza';
+
+export const buildSteps: BuildStep[] = [
+  {
+    name: 'Example post-build step',
+    phase: 'post',
+    run: async ({ projectRoot, buildDir }) => {
+      console.log(`Build finished. Root: ${projectRoot}, Output: ${buildDir}`);
+    },
+  },
+];
+```
+
+---
+
 ### `help`
 
 ```bash
@@ -97,6 +165,23 @@ gyoza help
 ```
 
 Prints all registered commands and their flags. Updated automatically as new commands are added.
+
+---
+
+## Public API
+
+Gyoza exports types from its root entry point for use in `gyoza.config.ts` and any tooling built on top of it:
+
+```ts
+import type { BuildStep, BuildContext, Command, CommandFlag } from 'gyoza';
+```
+
+| Type           | Description                                                         |
+| -------------- | ------------------------------------------------------------------- |
+| `BuildStep`    | A custom step injected into `gyoza build` via `gyoza.config.ts`     |
+| `BuildContext` | Passed to each `BuildStep.run` — contains `projectRoot`, `buildDir` |
+| `Command`      | The interface every registered gyoza command implements             |
+| `CommandFlag`  | A flag descriptor attached to a `Command` for help text             |
 
 ---
 
@@ -189,10 +274,12 @@ Flags follow POSIX convention: short `-f`, long `--flag`, value `--flag <value>`
 ```text
 gyoza/
 ├── cli.ts                      ← entry point; dispatches via registry
+├── index.ts                    ← barrel export (BuildStep, BuildContext, Command, CommandFlag)
 ├── src/
 │   ├── types.ts                ← Command and CommandFlag interfaces
 │   └── commands/
 │       ├── index.ts            ← registry (one line per command)
+│       ├── build.ts            ← build
 │       ├── generate.ts         ← env:generate
 │       └── update.ts           ← update
 └── package.json
