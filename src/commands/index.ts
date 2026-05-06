@@ -1,7 +1,12 @@
-import type { Command } from '../types.ts';
-import { buildCommand } from './build.ts';
-import { envGenerateCommand } from './generate.ts';
-import { initConfigCommand } from './init-config.ts';
-import { updateCommand } from './update.ts';
+import { gyoza } from '../gyoza.ts';
+import * as build from './build.ts';
+import { generateGroup } from './generate/index.ts';
+import { initGroup } from './init/index.ts';
+import * as update from './update.ts';
 
-export const commands: Command[] = [envGenerateCommand, updateCommand, buildCommand, initConfigCommand];
+export const registry = gyoza('gyoza — hono-react-template tooling', (cmd) => ({
+  generate: generateGroup,
+  init:     initGroup,
+  update:   cmd(update.description, update.run, update.flags),
+  build:    cmd(build.description, build.run),
+}));

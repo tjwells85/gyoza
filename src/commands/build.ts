@@ -1,7 +1,6 @@
 import { rm, mkdir, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Command } from '../types.ts';
 
 export interface BuildContext {
   projectRoot: string;
@@ -129,8 +128,5 @@ const runBuild = async (_args: string[]): Promise<void> => {
   }
 };
 
-export const buildCommand: Command = {
-  name: 'build',
-  description: 'Build the monorepo for production',
-  run: runBuild,
-};
+export const description = 'Build the monorepo for production';
+export { runBuild as run };

@@ -1,6 +1,5 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Command } from '../types.ts';
 
 const CONFIG_FILENAME = 'gyoza.config.ts';
 
@@ -30,8 +29,5 @@ const runInitConfig = async (_args: string[]): Promise<void> => {
   console.log('  Edit buildSteps to add your custom build steps.');
 };
 
-export const initConfigCommand: Command = {
-  name: 'init:config',
-  description: `Scaffold a ${CONFIG_FILENAME} with a placeholder build step`,
-  run: runInitConfig,
-};
+export const description = `Scaffold a ${CONFIG_FILENAME} with a placeholder build step`;
+export { runInitConfig as run };

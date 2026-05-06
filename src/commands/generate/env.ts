@@ -2,7 +2,6 @@ import { copyFileSync, existsSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
-import type { Command } from '../types.ts';
 
 const PROJECT_ROOT = process.cwd();
 const SERVER_ENV_TS = join(PROJECT_ROOT, 'server/env.ts');
@@ -452,8 +451,5 @@ const generateEnv = async (): Promise<void> => {
   }
 };
 
-export const envGenerateCommand: Command = {
-  name: 'env:generate',
-  description: 'Generate/update .env files from schema sources',
-  run: (_args) => generateEnv(),
-};
+export const description = 'Generate/update .env files from schema sources';
+export const run = (_args: string[]) => generateEnv();

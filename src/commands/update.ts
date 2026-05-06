@@ -1,7 +1,14 @@
 import { $ } from 'bun';
 import { join } from 'node:path';
 import type { PackageJson } from 'type-fest';
-import type { Command } from '../types.ts';
+import type { CommandFlag } from '../gyoza.ts';
+
+export const description = 'Interactive dependency updater';
+
+export const flags: CommandFlag[] = [
+  { flag: '--latest', description: 'Update to latest versions (ignores semver range)' },
+  { flag: '-y, --yes', description: 'Skip confirmation prompt' },
+];
 
 type BunPackageJson = PackageJson & { catalog: Record<string, string> };
 
@@ -233,12 +240,4 @@ const runUpdate = async (args: string[]): Promise<void> => {
   await runInstall();
 };
 
-export const updateCommand: Command = {
-  name: 'update',
-  description: 'Interactive dependency updater',
-  flags: [
-    { flag: '--latest', description: 'Update to latest versions (ignores semver range)' },
-    { flag: '-y, --yes', description: 'Skip confirmation prompt' },
-  ],
-  run: runUpdate,
-};
+export { runUpdate as run };

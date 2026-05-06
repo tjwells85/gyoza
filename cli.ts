@@ -1,36 +1,82 @@
 #!/usr/bin/env bun
 
-import { commands } from './src/commands/index.ts';
-import type { Command } from './src/types.ts';
+import { registry } from './src/commands/index.ts';
+import { isCommand } from './src/gyoza.ts';
+import type { Command, CommandGroup, GyozaNode } from './src/gyoza.ts';
 
-const printHelp = (cmds: Command[]): void => {
-  const pad = Math.max(...cmds.map(c => c.name.length), 'help'.length) + 2;
-  const lines = ['gyoza — hono-react-template tooling', '', 'Commands:'];
+const printGroupHelp = (group: CommandGroup, path: string[]): void => {
+  const isRoot = path.length === 1;
+  const keys = Object.keys(group.commands);
+  const nameWidth = Math.max(...keys.map(k => k.length), isRoot ? 'help'.length : 0) + 2;
+  const lines = [
+    isRoot ? group.description : `${path.join(' ')} — ${group.description}`,
+    '',
+    'Commands:',
+  ];
 
-  for (const cmd of cmds) {
-    lines.push(`  ${cmd.name.padEnd(pad)}${cmd.description}`);
-    for (const { flag, description } of cmd.flags ?? []) {
-      lines.push(`    ${flag.padEnd(pad)}${description}`);
+  for (const [name, node] of Object.entries(group.commands)) {
+    lines.push(`  ${name.padEnd(nameWidth)}${node.description}`);
+    if (isCommand(node)) {
+      for (const { flag, description } of node.flags ?? []) {
+        lines.push(`    ${flag.padEnd(nameWidth)}${description}`);
+      }
     }
   }
 
-  lines.push(`  ${'help'.padEnd(pad)}Show this message`);
+  if (isRoot) lines.push(`  ${'help'.padEnd(nameWidth)}Show this message`);
+
+  lines.push('');
+  lines.push(
+    isRoot
+      ? 'Run "gyoza <command> --help" for more information on a command.'
+      : `Run "${path.join(' ')} <command> --help" for more information on a command.`,
+  );
+
   console.log(lines.join('\n'));
 };
 
-const [, , commandName, ...args] = process.argv;
+const printCommandHelp = (cmd: Command, path: string[]): void => {
+  const usage = path.join(' ');
+  const hasFlags = (cmd.flags?.length ?? 0) > 0;
+  const lines = [`${usage} — ${cmd.description}`, '', `Usage: ${usage}${hasFlags ? ' [flags]' : ''}`];
 
-if (!commandName || commandName === 'help') {
-  printHelp(commands);
-  process.exit(0);
-}
+  if (hasFlags) {
+    const pad = Math.max(...(cmd.flags ?? []).map(f => f.flag.length)) + 2;
+    lines.push('', 'Flags:');
+    for (const { flag, description } of cmd.flags ?? []) {
+      lines.push(`  ${flag.padEnd(pad)}${description}`);
+    }
+  }
 
-const command = commands.find(c => c.name === commandName);
+  console.log(lines.join('\n'));
+};
 
-if (!command) {
-  console.error(`Unknown command: ${commandName}`);
-  console.error('Run "gyoza help" for available commands.');
-  process.exit(1);
-}
+const dispatch = async (node: GyozaNode, path: string[], args: string[]): Promise<void> => {
+  if (isCommand(node)) {
+    if (args[0] === '--help' || args[0] === 'help') {
+      printCommandHelp(node, path);
+      return;
+    }
+    await node.run(args);
+    return;
+  }
 
-await command.run(args);
+  const [next, ...rest] = args;
+
+  if (!next || next === '--help' || next === 'help') {
+    printGroupHelp(node, path);
+    return;
+  }
+
+  const child = node.commands[next];
+
+  if (!child) {
+    console.error(`Unknown command: ${[...path, next].join(' ')}`);
+    console.error(`Run "${path.join(' ')} --help" for available commands.`);
+    process.exit(1);
+  }
+
+  await dispatch(child, [...path, next], rest);
+};
+
+await dispatch(registry, ['gyoza'], process.argv.slice(2));

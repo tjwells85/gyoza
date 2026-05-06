@@ -20,7 +20,7 @@ Run `bun install`, then wire up your scripts:
 
 ```json
 "scripts": {
-  "env:generate":   "gyoza env:generate",
+  "generate:env":   "gyoza generate env",
   "update:all":     "gyoza update",
   "update:latest":  "gyoza update --latest"
 }
@@ -30,12 +30,12 @@ Run `bun install`, then wire up your scripts:
 
 ## Commands
 
-### `env:generate`
+### `generate env`
 
 Generates `server/.env` and `frontend/.env` from their respective schema files. Existing values are preserved. A `.env.backup` is written before any existing file is overwritten, and the file is restored if validation fails.
 
 ```bash
-gyoza env:generate
+gyoza generate env
 ```
 
 **Sources:**
@@ -132,12 +132,12 @@ If no `gyoza.config.ts` exists the build proceeds normally with no extra steps.
 
 ---
 
-### `init:config`
+### `init config`
 
 Scaffolds a `gyoza.config.ts` in the project root with a placeholder build step ready to edit. Exits with an error if the file already exists.
 
 ```bash
-gyoza init:config
+gyoza init config
 ```
 
 The generated file:
@@ -162,26 +162,32 @@ export const buildSteps: BuildStep[] = [
 
 ```bash
 gyoza help
+gyoza --help
+gyoza <namespace> --help    # e.g. gyoza generate --help
+gyoza <command> --help      # e.g. gyoza update --help
+gyoza <namespace> <command> --help   # e.g. gyoza generate env --help
 ```
 
-Prints all registered commands and their flags. Updated automatically as new commands are added.
+Prints help at any level of the command tree. Updated automatically as new commands are added.
 
 ---
 
 ## Public API
 
-Gyoza exports types from its root entry point for use in `gyoza.config.ts` and any tooling built on top of it:
+Gyoza exports types and the factory function from its root entry point:
 
 ```ts
-import type { BuildStep, BuildContext, Command, CommandFlag } from 'gyoza';
+import type { BuildStep, BuildContext, Command, CommandFlag, CommandGroup, GyozaNode } from 'gyoza';
 ```
 
-| Type           | Description                                                         |
+| Export         | Description                                                         |
 | -------------- | ------------------------------------------------------------------- |
 | `BuildStep`    | A custom step injected into `gyoza build` via `gyoza.config.ts`     |
 | `BuildContext` | Passed to each `BuildStep.run` — contains `projectRoot`, `buildDir` |
-| `Command`      | The interface every registered gyoza command implements             |
-| `CommandFlag`  | A flag descriptor attached to a `Command` for help text             |
+| `Command`      | Leaf node — has `description`, `flags?`, and `run`                  |
+| `CommandGroup` | Branch node — has `description` and `commands` record               |
+| `GyozaNode`    | Union of `Command \| CommandGroup`                                  |
+| `CommandFlag`  | A flag descriptor: `{ flag: string, description: string }`          |
 
 ---
 
@@ -189,76 +195,138 @@ import type { BuildStep, BuildContext, Command, CommandFlag } from 'gyoza';
 
 Gyoza uses a command registry. Each command is a file in `src/commands/` that exports a `Command` object. Adding a new command takes three steps — no changes to `cli.ts` required.
 
-### Step 1 — Create the command file
-
-Create `src/commands/<name>.ts`. Keep implementation details private; export only the `Command` object.
+Every command tree is built with the `gyoza` factory. It injects a `cmd` helper into a callback — you never import `cmd` separately.
 
 ```ts
-// src/commands/drizzle.ts
-import type { Command } from '../types.ts';
+import { gyoza } from '../../gyoza.ts';
 
-const drizzleInit = async (args: string[]): Promise<void> => {
-  const db = args.includes('--db') ? args[args.indexOf('--db') + 1] : 'pg';
-  console.log(`Scaffolding Drizzle ORM with ${db} driver...`);
-  // install deps, write files, update package.json scripts
-};
+export const myGroup = gyoza('Group description', (cmd) => ({
+  subcommand: cmd('Subcommand description', runFn, optionalFlags),
+  nested:     gyoza('Nested group', (cmd) => ({
+    deeper: cmd('Nested subcommand', runDeep),
+  })),
+}));
+```
 
-export const drizzleInitCommand: Command = {
-  name: 'drizzle:init',
-  description: 'Scaffold Drizzle ORM on the server workspace',
-  flags: [
-    { flag: '--db <driver>', description: 'Database driver: pg | mysql | sqlite (default: pg)' },
-  ],
-  run: drizzleInit,
+### Standalone command
+
+For top-level commands with no subcommands (like `update`, `build`), export `description`, `run`, and optionally `flags` from the command file:
+
+```ts
+// src/commands/lint.ts
+export const description = 'Lint the monorepo';
+
+export const run = async (_args: string[]): Promise<void> => {
+  // implementation
 };
 ```
 
-### Step 2 — Register in the index
-
-Add a one-line import and append to the array in [src/commands/index.ts](src/commands/index.ts):
+Then register it in [src/commands/index.ts](src/commands/index.ts):
 
 ```ts
-import type { Command } from '../types.ts';
-import { envGenerateCommand } from './generate.ts';
-import { updateCommand } from './update.ts';
-import { drizzleInitCommand } from './drizzle.ts'; // ← add import
+import * as lint from './lint.ts'; // ← add import
 
-export const commands: Command[] = [
-  envGenerateCommand,
-  updateCommand,
-  drizzleInitCommand, // ← add here
-];
+export const registry = gyoza('gyoza — ...', (cmd) => ({
+  // existing entries...
+  lint: cmd(lint.description, lint.run), // ← add here
+}));
 ```
 
-That's it. `gyoza help` will automatically include the new command and its flags.
+### Namespace command
 
-### The `Command` interface
+For commands that live under a namespace (`generate types`, `drizzle init`, etc.), add a file inside the namespace directory and register it in that namespace's `index.ts`.
+
+**Step 1** — Create the command file:
 
 ```ts
-// src/types.ts
-export interface CommandFlag {
-  flag: string;
-  description: string;
-}
+// src/commands/generate/types.ts
+export const description = 'Generate TypeScript types from the database schema';
 
-export interface Command {
-  name: string;
-  description: string;
-  flags?: CommandFlag[];
-  run(args: string[]): Promise<void>;
-}
+export const run = async (_args: string[]): Promise<void> => {
+  // implementation
+};
+```
+
+**Step 2** — Register in the namespace index:
+
+```ts
+// src/commands/generate/index.ts
+import { gyoza } from '../../gyoza.ts';
+import * as env from './env.ts';
+import * as types from './types.ts'; // ← add import
+
+export const generateGroup = gyoza('Code generation commands', (cmd) => ({
+  env:   cmd(env.description, env.run),
+  types: cmd(types.description, types.run), // ← add here
+}));
+```
+
+Nothing else changes. `gyoza generate --help` automatically shows the new command.
+
+### Adding a new namespace
+
+Create the directory, an `index.ts` that calls `gyoza()`, and register the group in the root [src/commands/index.ts](src/commands/index.ts):
+
+```text
+src/commands/drizzle/
+├── index.ts   ← calls gyoza(), exports drizzleGroup
+├── init.ts    ← exports description + run
+└── migrate.ts ← exports description + run
+```
+
+```ts
+// src/commands/drizzle/index.ts
+import { gyoza } from '../../gyoza.ts';
+import * as init from './init.ts';
+import * as migrate from './migrate.ts';
+
+export const drizzleGroup = gyoza('Drizzle ORM commands', (cmd) => ({
+  init:    cmd(init.description, init.run),
+  migrate: cmd(migrate.description, migrate.run),
+}));
+```
+
+```ts
+// src/commands/index.ts — add one import and one line
+import { drizzleGroup } from './drizzle/index.ts';
+
+export const registry = gyoza('gyoza — ...', (cmd) => ({
+  generate: generateGroup,
+  init:     initGroup,
+  drizzle:  drizzleGroup, // ← add here
+  update:   cmd(...),
+  build:    cmd(...),
+}));
+```
+
+`gyoza drizzle --help` immediately works. No other changes required.
+
+### The `gyoza` factory
+
+```ts
+// src/gyoza.ts
+export const gyoza = (
+  description: string,
+  builder: (cmd: CommandFactory) => Record<string, GyozaNode>,
+): CommandGroup => { ... };
+```
+
+The injected `cmd` helper creates a leaf `Command`:
+
+```ts
+cmd(description: string, run: Handler, flags?: CommandFlag[]): Command
 ```
 
 `flags` is optional — omit it for commands with no options.
 
 ### Naming conventions
 
-| Pattern                                   | Examples                                          |
-| ----------------------------------------- | ------------------------------------------------- |
-| `namespace:verb` for tool-scoped commands | `drizzle:init`, `drizzle:migrate`, `env:generate` |
-| Plain verb for top-level utilities        | `update`, `lint`, `check`                         |
+| Pattern | Examples |
+| ------- | -------- |
+| `gyoza <namespace> <command>` for grouped commands | `gyoza generate env`, `gyoza init config`, `gyoza drizzle migrate` |
+| `gyoza <command>` for standalone utilities | `gyoza update`, `gyoza build`, `gyoza lint` |
 
-Flags follow POSIX convention: short `-f`, long `--flag`, value `--flag <value>`.
+Namespace keys in the registry are the argv tokens — keep them short, lowercase, no hyphens. Flags follow POSIX convention: short `-f`, long `--flag`, value `--flag <value>`.
 
 ### Guidelines
 
@@ -273,19 +341,24 @@ Flags follow POSIX convention: short `-f`, long `--flag`, value `--flag <value>`
 
 ```text
 gyoza/
-├── cli.ts                      ← entry point; dispatches via registry
-├── index.ts                    ← barrel export (BuildStep, BuildContext, Command, CommandFlag)
+├── cli.ts                      ← entry point; recursive dispatch down the command tree
+├── index.ts                    ← barrel export
 ├── src/
-│   ├── types.ts                ← Command and CommandFlag interfaces
+│   ├── gyoza.ts                ← factory: gyoza(), Command, CommandGroup, GyozaNode
 │   └── commands/
-│       ├── index.ts            ← registry (one line per command)
-│       ├── build.ts            ← build
-│       ├── generate.ts         ← env:generate
-│       └── update.ts           ← update
+│       ├── index.ts            ← root registry (the top-level gyoza() call)
+│       ├── build.ts            ← build command
+│       ├── update.ts           ← update command
+│       ├── generate/
+│       │   ├── index.ts        ← generateGroup (gyoza() call)
+│       │   └── env.ts          ← generate env
+│       └── init/
+│           ├── index.ts        ← initGroup (gyoza() call)
+│           └── config.ts       ← init config
 └── package.json
 ```
 
-`cli.ts` imports `commands` from the registry, resolves the command by name, and calls `run(args)`. The help text is derived from the registry at runtime — no manual sync needed.
+`cli.ts` walks `process.argv` down the command tree recursively. Each node is either a `Command` (runs immediately) or a `CommandGroup` (recurses into the next arg). Help is printed at whatever depth `--help` appears.
 
 ---
 
@@ -300,5 +373,5 @@ bun run lint
 
 # run a command locally
 bun run cli.ts help
-bun run cli.ts env:generate
+bun run cli.ts generate env
 ```
