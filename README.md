@@ -1,6 +1,6 @@
 # gyoza
 
-CLI tooling for projects scaffolded from [`hono-react-template`](https://github.com/timw/hono-react-template) — a fullstack Bun + Hono + React monorepo. Gyoza extracts the maintenance scripts into a versioned package so all downstream projects receive bug fixes and improvements via `bun update`.
+CLI tooling for projects scaffolded from [`hono-react-template`](https://github.com/tjwells85/hono-react-template) — a fullstack Bun + Hono + React monorepo. Gyoza extracts the maintenance scripts into a versioned package so all downstream projects receive bug fixes and improvements via `bun update`.
 
 > The name: Hono means "flame", Bun's mascot is a bao, gyoza are pan-fried dumplings — fire + bao.
 
@@ -12,7 +12,7 @@ Add gyoza as a dev dependency in your project root `package.json`:
 
 ```json
 "devDependencies": {
-  "gyoza": "github:timw/gyoza"
+  "gyoza": "github:tjwells85/gyoza"
 }
 ```
 
