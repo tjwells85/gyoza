@@ -1,18 +1,9 @@
 import { rm, mkdir, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-
-export interface BuildContext {
-  projectRoot: string;
-  buildDir: string;
-}
-
-export interface BuildStep {
-  name: string;
-  /** 'pre' runs after clean, before frontend/server build. 'post' runs after assembly. Defaults to 'post'. */
-  phase?: 'pre' | 'post';
-  run(ctx: BuildContext): Promise<void>;
-}
+import { $ } from 'bun';
+import { loadConfig } from '../config.ts';
+import type { BuildContext, BuildStep } from '../config.ts';
 
 const runCommand = async (command: string, args: string[], description: string, cwd: string): Promise<void> => {
   console.log(`\n🔨 ${description}...`);
@@ -25,17 +16,21 @@ const runCommand = async (command: string, args: string[], description: string, 
   }
 };
 
-const loadUserSteps = async (projectRoot: string): Promise<BuildStep[]> => {
-  const configPath = join(projectRoot, 'gyoza.config.ts');
-  if (!existsSync(configPath)) return [];
+const performCleanInstall = async (projectRoot: string): Promise<void> => {
+  console.log('\n🧹 Removing all node_modules...');
 
-  try {
-    const config = await import(configPath);
-    return Array.isArray(config.buildSteps) ? (config.buildSteps as BuildStep[]) : [];
-  } catch (err) {
-    console.warn(`  ⚠ Failed to load gyoza.config.ts: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
+  const result = await $`find ${projectRoot} -name node_modules -type d -prune`.quiet();
+  const dirs = result.stdout.toString().trim().split('\n').filter(Boolean);
+
+  for (const dir of dirs) {
+    await rm(dir, { recursive: true, force: true });
+    console.log(`  ✓ Removed ${dir.replace(projectRoot, '.')}`);
   }
+
+  console.log('\n📦 Running bun install...');
+  const proc = Bun.spawn(['bun', 'install'], { stdout: 'inherit', stderr: 'inherit', cwd: projectRoot });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) throw new Error('bun install failed');
 };
 
 const cleanBuildDir = async (buildDir: string): Promise<void> => {
@@ -88,6 +83,11 @@ const assembleDist = async (projectRoot: string, buildDir: string): Promise<void
   }
 };
 
+const runStep = async (step: Omit<BuildStep, 'phase'>, ctx: BuildContext): Promise<void> => {
+  console.log(`\n🔧 ${step.name}...`);
+  await step.run(ctx);
+};
+
 const runBuild = async (_args: string[]): Promise<void> => {
   const startTime = performance.now();
   const projectRoot = process.cwd();
@@ -98,25 +98,31 @@ const runBuild = async (_args: string[]): Promise<void> => {
   console.log(`📁 Project root: ${projectRoot}`);
 
   try {
-    const userSteps = await loadUserSteps(projectRoot);
-    const preSteps = userSteps.filter(s => s.phase === 'pre');
-    const postSteps = userSteps.filter(s => s.phase !== 'pre');
+    const config = await loadConfig(projectRoot);
+    type RawBuild = { cleanInstall?: boolean; pre?: Omit<BuildStep, 'phase'>[]; post?: Omit<BuildStep, 'phase'>[]; steps?: (Omit<BuildStep, 'phase'> & { phase?: 'pre' | 'post' })[] };
+    const build = (config.build ?? {}) as RawBuild;
+
+    const legacySteps = build.steps ?? [];
+    const preSteps: Omit<BuildStep, 'phase'>[] = [
+      ...(build.pre ?? []),
+      ...legacySteps.filter(s => s.phase === 'pre'),
+    ];
+    const postSteps: Omit<BuildStep, 'phase'>[] = [
+      ...(build.post ?? []),
+      ...legacySteps.filter(s => s.phase !== 'pre'),
+    ];
+
+    if (build.cleanInstall) await performCleanInstall(projectRoot);
 
     await cleanBuildDir(buildDir);
 
-    for (const step of preSteps) {
-      console.log(`\n🔧 ${step.name}...`);
-      await step.run(ctx);
-    }
+    for (const step of preSteps) await runStep(step, ctx);
 
     await buildFrontend(projectRoot);
     await buildServer(projectRoot, buildDir);
     await assembleDist(projectRoot, buildDir);
 
-    for (const step of postSteps) {
-      console.log(`\n🔧 ${step.name}...`);
-      await step.run(ctx);
-    }
+    for (const step of postSteps) await runStep(step, ctx);
 
     const duration = ((performance.now() - startTime) / 1000).toFixed(2);
     console.log(`\n✅ Build completed successfully in ${duration}s`);

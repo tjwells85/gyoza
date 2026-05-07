@@ -92,13 +92,14 @@ gyoza update -y           # skip confirmation prompt
 
 ### `build`
 
-Builds the monorepo for production. Runs in four phases:
+Builds the monorepo for production. Runs in phases:
 
-1. **Clean** — removes and recreates the `build/` directory
-2. **Pre steps** — any custom `gyoza.config.ts` steps with `phase: 'pre'`
-3. **Build** — compiles the frontend (`bun run --filter=frontend build`) and bundles the server (`Bun.build`)
-4. **Assemble** — copies `frontend/dist` → `build/client` and `server/.env` → `build/.env`
-5. **Post steps** — any custom `gyoza.config.ts` steps with `phase: 'post'` (default)
+1. **Clean install** — (optional) removes all `node_modules` recursively then runs `bun install`
+2. **Clean** — removes and recreates the `build/` directory
+3. **Pre steps** — any `gyoza.config.ts` steps in `build.pre`
+4. **Build** — compiles the frontend (`bun run --filter=frontend build`) and bundles the server (`Bun.build`)
+5. **Assemble** — copies `frontend/dist` → `build/client` and `server/.env` → `build/.env`
+6. **Post steps** — any `gyoza.config.ts` steps in `build.post`
 
 ```bash
 gyoza build
@@ -106,26 +107,26 @@ gyoza build
 
 #### Extending the build with `gyoza.config.ts`
 
-Create `gyoza.config.ts` in your project root to inject custom build steps. Steps with `phase: 'pre'` run before the frontend/server build; `phase: 'post'` (the default) runs after assembly.
+Create `gyoza.config.ts` in your project root to configure the build. Use `build.pre` for steps that run before the frontend/server build; `build.post` for steps that run after assembly.
 
 ```ts
 // gyoza.config.ts
-import type { BuildStep } from 'gyoza';
+import type { GyozaConfig } from 'gyoza';
 
-export const buildSteps: BuildStep[] = [
-  {
-    name: 'Build Rust CLI',
-    phase: 'post',
-    run: async ({ buildDir }) => {
-      const proc = Bun.spawn(['cargo', 'build', '--release'], {
-        stdout: 'inherit',
-        stderr: 'inherit',
-      });
-      await proc.exited;
-      await Bun.write(`${buildDir}/mycli`, Bun.file('target/release/mycli'));
-    },
+export default {
+  build: {
+    cleanInstall: false,   // set true to wipe all node_modules and re-install before building
+    pre: [],
+    post: [
+      {
+        name: 'Copy Rust CLI',
+        run: async ({ buildDir }) => {
+          await Bun.write(`${buildDir}/mycli`, Bun.file('target/release/mycli'));
+        },
+      },
+    ],
   },
-];
+} satisfies GyozaConfig;
 ```
 
 If no `gyoza.config.ts` exists the build proceeds normally with no extra steps.
@@ -134,7 +135,7 @@ If no `gyoza.config.ts` exists the build proceeds normally with no extra steps.
 
 ### `init config`
 
-Scaffolds a `gyoza.config.ts` in the project root with a placeholder build step ready to edit. Exits with an error if the file already exists.
+Scaffolds a `gyoza.config.ts` in the project root. If a legacy config (using `export const buildSteps`) is detected, migrates it to the current format instead of failing.
 
 ```bash
 gyoza init config
@@ -143,18 +144,25 @@ gyoza init config
 The generated file:
 
 ```ts
-import type { BuildStep } from 'gyoza';
+import type { GyozaConfig } from 'gyoza';
 
-export const buildSteps: BuildStep[] = [
-  {
-    name: 'Example post-build step',
-    phase: 'post',
-    run: async ({ projectRoot, buildDir }) => {
-      console.log(`Build finished. Root: ${projectRoot}, Output: ${buildDir}`);
-    },
+export default {
+  build: {
+    cleanInstall: false,
+    pre: [],
+    post: [
+      {
+        name: 'Example post-build step',
+        run: async ({ projectRoot, buildDir }) => {
+          console.log(`Build finished. Root: ${projectRoot}, Output: ${buildDir}`);
+        },
+      },
+    ],
   },
-];
+} satisfies GyozaConfig;
 ```
+
+**Migration:** if a legacy `buildSteps` config is found, `gyoza init config` rewrites it into `build.steps` (a deprecated compatibility field) so nothing breaks. Move entries into `build.pre` / `build.post` (without the `phase` field) when convenient.
 
 ---
 
@@ -177,17 +185,19 @@ Prints help at any level of the command tree. Updated automatically as new comma
 Gyoza exports types and the factory function from its root entry point:
 
 ```ts
-import type { BuildStep, BuildContext, Command, CommandFlag, CommandGroup, GyozaNode } from 'gyoza';
+import type { BuildConfig, BuildContext, BuildStep, GyozaConfig, Command, CommandFlag, CommandGroup, GyozaNode } from 'gyoza';
 ```
 
-| Export         | Description                                                         |
-| -------------- | ------------------------------------------------------------------- |
-| `BuildStep`    | A custom step injected into `gyoza build` via `gyoza.config.ts`     |
-| `BuildContext` | Passed to each `BuildStep.run` — contains `projectRoot`, `buildDir` |
-| `Command`      | Leaf node — has `description`, `flags?`, and `run`                  |
-| `CommandGroup` | Branch node — has `description` and `commands` record               |
-| `GyozaNode`    | Union of `Command \| CommandGroup`                                  |
-| `CommandFlag`  | A flag descriptor: `{ flag: string, description: string }`          |
+| Export         | Description                                                                      |
+| -------------- | -------------------------------------------------------------------------------- |
+| `GyozaConfig`  | Top-level config shape for `gyoza.config.ts`                                     |
+| `BuildConfig`  | `build` section of `GyozaConfig` — `cleanInstall`, `pre`, `post`, `steps`        |
+| `BuildStep`    | A custom step — `name` and `run(ctx)`; `phase` is deprecated                     |
+| `BuildContext` | Passed to each `BuildStep.run` — contains `projectRoot`, `buildDir`              |
+| `Command`      | Leaf node — has `description`, `flags?`, and `run`                               |
+| `CommandGroup` | Branch node — has `description` and `commands` record                            |
+| `GyozaNode`    | Union of `Command \| CommandGroup`                                               |
+| `CommandFlag`  | A flag descriptor: `{ flag: string, description: string }`                       |
 
 ---
 
