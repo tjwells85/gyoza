@@ -10,6 +10,7 @@
     "gyoza": "./cli.ts"
   },
   "scripts": {
+    "test": "bun test",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

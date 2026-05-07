@@ -139,4 +139,4 @@ const runInitConfig = async (_args: string[]): Promise<void> => {
 };
 
 export const description = `Scaffold or migrate ${CONFIG_FILENAME}`;
-export { runInitConfig as run };
+export { runInitConfig as run, isLegacyConfig, extractBuildStepsLiteral, migrateLegacyConfig };
