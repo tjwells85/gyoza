@@ -47,7 +47,7 @@ const cleanBuildDir = async (buildDir: string): Promise<void> => {
 };
 
 const buildFrontend = async (projectRoot: string): Promise<void> => {
-  await runCommand('bun', ['run', '--filter=frontend', '--elide-lines=0', 'build'], 'Building frontend', projectRoot);
+  await runCommand('bun', ['run', '--filter=frontend', 'build'], 'Building frontend', projectRoot);
 
   if (!existsSync(join(projectRoot, 'frontend/dist'))) {
     throw new Error('Frontend dist not found after build. Expected at: frontend/dist');
