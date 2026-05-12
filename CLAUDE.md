@@ -1,5 +1,7 @@
 # CLAUDE.md — Gyoza
 
+> **CRITICAL: Any time `version` in `package.json` is incremented, `changelog.md` MUST be updated in the same commit with a new version entry covering every change since the previous release. Never bump the version without updating the changelog.**
+
 ## What Is This
 
 **Gyoza** is a private CLI tooling package for projects scaffolded from the
