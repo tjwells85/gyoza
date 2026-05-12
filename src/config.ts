@@ -16,9 +16,37 @@ export interface BuildStep {
   run(ctx: BuildContext): Promise<void>;
 }
 
+/** What to do when a check finds issues: print a warning and continue, or fail the build. */
+export type CheckAction = 'warn' | 'fail';
+
+/**
+ * How to handle `tsc --noEmit` before the build.
+ * - `'off'`  — skip (default)
+ * - `'warn'` — run, print error count, continue
+ * - `'fail'` — run, print error count, abort if any errors
+ */
+export type TypeCheckLevel = 'off' | 'warn' | 'fail';
+
+/**
+ * How to handle `eslint .` before the build.
+ * - `'off'`  — skip (default)
+ * - `'warn'` — run, print counts, continue regardless
+ * - `'fail'` — run, print counts, abort if any errors or warnings
+ * - object   — fine-grained: set `onError` / `onWarning` independently
+ */
+export type LintCheckLevel =
+  | 'off'
+  | 'warn'
+  | 'fail'
+  | { onError: CheckAction; onWarning: CheckAction };
+
 export interface BuildConfig {
   /** Remove all node_modules recursively before building, then run `bun install`. Default: false. */
   cleanInstall?: boolean;
+  /** Run `tsc --noEmit` before the build. Default: 'off'. */
+  typecheck?: TypeCheckLevel;
+  /** Run `eslint .` before the build. Default: 'off'. */
+  lint?: LintCheckLevel;
   /** Steps to run after clean, before the frontend/server build. */
   pre?: Omit<BuildStep, 'phase'>[];
   /** Steps to run after assembly. */
@@ -48,6 +76,8 @@ type RawBuildConfig = {
   post?: Omit<BuildStep, 'phase'>[];
   steps?: BuildStep[];
   cleanInstall?: boolean;
+  typecheck?: TypeCheckLevel;
+  lint?: LintCheckLevel;
 };
 
 const mergeConfig = (base: GyozaConfig, override: Partial<GyozaConfig>): GyozaConfig => {
@@ -56,9 +86,11 @@ const mergeConfig = (base: GyozaConfig, override: Partial<GyozaConfig>): GyozaCo
   return {
     build: {
       cleanInstall: o?.cleanInstall ?? b?.cleanInstall ?? false,
-      pre:   o?.pre   ?? b?.pre   ?? [],
-      post:  o?.post  ?? b?.post  ?? [],
-      steps: o?.steps ?? b?.steps ?? [],
+      typecheck:    o?.typecheck    ?? b?.typecheck,
+      lint:         o?.lint         ?? b?.lint,
+      pre:          o?.pre          ?? b?.pre   ?? [],
+      post:         o?.post         ?? b?.post  ?? [],
+      steps:        o?.steps        ?? b?.steps ?? [],
     },
   };
 };

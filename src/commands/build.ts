@@ -3,7 +3,92 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { $ } from 'bun';
 import { loadConfig } from '../config.ts';
-import type { BuildContext, BuildStep } from '../config.ts';
+import type { BuildContext, BuildStep, CheckAction, LintCheckLevel, TypeCheckLevel } from '../config.ts';
+
+const spawnCaptured = async (cmd: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', cwd });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+};
+
+const runTypecheck = async (projectRoot: string, level: TypeCheckLevel): Promise<boolean> => {
+  if (level === 'off') return true;
+
+  console.log('\n🔍 Type checking...');
+  const { stdout, stderr, exitCode } = await spawnCaptured(['bunx', 'tsc', '--noEmit'], projectRoot);
+
+  if (exitCode === 0) {
+    console.log('  ✓ No type errors');
+    return true;
+  }
+
+  const output = stdout + stderr;
+  const count = (output.match(/: error TS\d+:/g) ?? []).length;
+  const summary = count > 0 ? `${count} error${count !== 1 ? 's' : ''}` : 'errors found';
+
+  if (level === 'warn') {
+    console.warn(`  ⚠ TypeScript: ${summary}`);
+    return true;
+  }
+
+  console.error(`  ✗ TypeScript: ${summary}`);
+  return false;
+};
+
+const normalizeLintLevel = (level: LintCheckLevel): { onError: CheckAction; onWarning: CheckAction } | 'off' => {
+  if (level === 'off') return 'off';
+  if (level === 'warn') return { onError: 'warn', onWarning: 'warn' };
+  if (level === 'fail') return { onError: 'fail', onWarning: 'fail' };
+  return level;
+};
+
+const runLint = async (projectRoot: string, level: LintCheckLevel): Promise<boolean> => {
+  const resolved = normalizeLintLevel(level);
+  if (resolved === 'off') return true;
+
+  console.log('\n🔍 Linting...');
+  const { stdout, exitCode } = await spawnCaptured(['bunx', 'eslint', '.', '--format', 'json'], projectRoot);
+
+  if (exitCode === 0) {
+    console.log('  ✓ No lint issues');
+    return true;
+  }
+
+  let errors = 0;
+  let warnings = 0;
+  let parsed = false;
+
+  try {
+    const results = JSON.parse(stdout) as Array<{ errorCount: number; warningCount: number }>;
+    for (const file of results) {
+      errors += file.errorCount;
+      warnings += file.warningCount;
+    }
+    parsed = true;
+  } catch { /* fall through to generic message */ }
+
+  const parts: string[] = [];
+  if (errors > 0) parts.push(`${errors} error${errors !== 1 ? 's' : ''}`);
+  if (warnings > 0) parts.push(`${warnings} warning${warnings !== 1 ? 's' : ''}`);
+  const summary = parsed && parts.length > 0 ? parts.join(', ') : 'issues found';
+
+  const shouldFail =
+    (errors > 0 && resolved.onError === 'fail') ||
+    (warnings > 0 && resolved.onWarning === 'fail') ||
+    (!parsed && resolved.onError === 'fail');
+
+  if (shouldFail) {
+    console.error(`  ✗ ESLint: ${summary}`);
+    return false;
+  }
+
+  console.warn(`  ⚠ ESLint: ${summary}`);
+  return true;
+};
 
 const runCommand = async (command: string, args: string[], description: string, cwd: string): Promise<void> => {
   console.log(`\n🔨 ${description}...`);
@@ -99,7 +184,7 @@ const runBuild = async (_args: string[]): Promise<void> => {
 
   try {
     const config = await loadConfig(projectRoot);
-    type RawBuild = { cleanInstall?: boolean; pre?: Omit<BuildStep, 'phase'>[]; post?: Omit<BuildStep, 'phase'>[]; steps?: (Omit<BuildStep, 'phase'> & { phase?: 'pre' | 'post' })[] };
+    type RawBuild = { cleanInstall?: boolean; typecheck?: TypeCheckLevel; lint?: LintCheckLevel; pre?: Omit<BuildStep, 'phase'>[]; post?: Omit<BuildStep, 'phase'>[]; steps?: (Omit<BuildStep, 'phase'> & { phase?: 'pre' | 'post' })[] };
     const build = (config.build ?? {}) as RawBuild;
 
     const legacySteps = build.steps ?? [];
@@ -111,6 +196,16 @@ const runBuild = async (_args: string[]): Promise<void> => {
       ...(build.post ?? []),
       ...legacySteps.filter(s => s.phase !== 'pre'),
     ];
+
+    const [typecheckOk, lintOk] = await Promise.all([
+      runTypecheck(projectRoot, build.typecheck ?? 'off'),
+      runLint(projectRoot, build.lint ?? 'off'),
+    ]);
+
+    if (!typecheckOk || !lintOk) {
+      console.error('\n❌ Pre-build checks failed. Fix issues or set the level to "warn" to proceed.');
+      process.exit(1);
+    }
 
     if (build.cleanInstall) await performCleanInstall(projectRoot);
 
