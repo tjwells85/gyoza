@@ -116,6 +116,8 @@ import type { GyozaConfig } from 'gyoza';
 export default {
   build: {
     cleanInstall: false,   // set true to wipe all node_modules and re-install before building
+    typecheck: 'fail',     // 'off' | 'warn' | 'fail' — runs tsc --noEmit before the build
+    lint: 'fail',          // 'off' | 'warn' | 'fail' | { onError, onWarning } — runs eslint . before the build
     pre: [],
     post: [
       {
@@ -128,6 +130,14 @@ export default {
   },
 } satisfies GyozaConfig;
 ```
+
+`typecheck` and `lint` both default to `'off'`. `'warn'` prints a summary of errors/warnings and continues; `'fail'` aborts the build if any issues are found. `lint` additionally accepts an object for independent control:
+
+```ts
+lint: { onError: 'fail', onWarning: 'warn' }  // fail on errors, warn on warnings
+```
+
+Both checks run in parallel before the build directory is cleaned, so a failed check leaves the existing build intact.
 
 If no `gyoza.config.ts` exists the build proceeds normally with no extra steps.
 
@@ -188,16 +198,19 @@ Gyoza exports types and the factory function from its root entry point:
 import type { BuildConfig, BuildContext, BuildStep, GyozaConfig, Command, CommandFlag, CommandGroup, GyozaNode } from 'gyoza';
 ```
 
-| Export         | Description                                                                      |
-| -------------- | -------------------------------------------------------------------------------- |
-| `GyozaConfig`  | Top-level config shape for `gyoza.config.ts`                                     |
-| `BuildConfig`  | `build` section of `GyozaConfig` — `cleanInstall`, `pre`, `post`, `steps`        |
-| `BuildStep`    | A custom step — `name` and `run(ctx)`; `phase` is deprecated                     |
-| `BuildContext` | Passed to each `BuildStep.run` — contains `projectRoot`, `buildDir`              |
-| `Command`      | Leaf node — has `description`, `flags?`, and `run`                               |
-| `CommandGroup` | Branch node — has `description` and `commands` record                            |
-| `GyozaNode`    | Union of `Command \| CommandGroup`                                               |
-| `CommandFlag`  | A flag descriptor: `{ flag: string, description: string }`                       |
+| Export           | Description                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `GyozaConfig`    | Top-level config shape for `gyoza.config.ts`                                                 |
+| `BuildConfig`    | `build` section of `GyozaConfig`: `cleanInstall`, `typecheck`, `lint`, `pre`, `post`         |
+| `TypeCheckLevel` | `'off' \| 'warn' \| 'fail'` - controls `tsc --noEmit` pre-build check                        |
+| `LintCheckLevel` | `'off' \| 'warn' \| 'fail' \| { onError, onWarning }` - controls `eslint .` pre-build check  |
+| `CheckAction`    | `'warn' \| 'fail'` - action taken when a check finds issues                                  |
+| `BuildStep`      | A custom step: `name` and `run(ctx)`; `phase` is deprecated                                  |
+| `BuildContext`   | Passed to each `BuildStep.run`: `projectRoot`, `buildDir`                                    |
+| `Command`        | Leaf node: `description`, `flags?`, and `run`                                                |
+| `CommandGroup`   | Branch node: `description` and `commands` record                                             |
+| `GyozaNode`      | Union of `Command \| CommandGroup`                                                           |
+| `CommandFlag`    | A flag descriptor: `{ flag: string, description: string }`                                   |
 
 ---
 
