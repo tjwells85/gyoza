@@ -176,6 +176,37 @@ export default {
 
 ---
 
+### Custom scripts
+
+Projects can define their own subcommands under `gyoza init` and `gyoza generate` via the `custom` field in `gyoza.config.ts`:
+
+```ts
+import type { GyozaConfig } from 'gyoza';
+
+export default {
+  custom: {
+    init: {
+      printHello: () => console.log('Hello!'),
+    },
+    generate: {
+      scaffold: async () => {
+        // any async logic
+      },
+    },
+  },
+} satisfies GyozaConfig;
+```
+
+`gyoza init printHello` and `gyoza generate scaffold` then invoke the corresponding function.
+
+**Collision rules:**
+
+- Built-in commands always win. If a custom script name matches a built-in, gyoza prints a warning at startup and ignores the custom entry.
+- TypeScript enforces this at config-authoring time — known command names resolve to `never` in the `CustomScripts` type, so your editor will flag a collision before you run anything.
+- The known-command types (`KnownInitCommand`, `KnownGenerateCommand`) are derived directly from the registry objects, so they automatically include any new built-in commands added to gyoza.
+
+---
+
 ### `help`
 
 ```bash
@@ -207,6 +238,7 @@ import type { BuildConfig, BuildContext, BuildStep, GyozaConfig, Command, Comman
 | `CheckAction`    | `'warn' \| 'fail'` - action taken when a check finds issues                                  |
 | `BuildStep`      | A custom step: `name` and `run(ctx)`; `phase` is deprecated                                  |
 | `BuildContext`   | Passed to each `BuildStep.run`: `projectRoot`, `buildDir`                                    |
+| `CustomScripts`  | `custom` section of `GyozaConfig`: `init` and `generate` maps of custom script functions     |
 | `Command`        | Leaf node: `description`, `flags?`, and `run`                                                |
 | `CommandGroup`   | Branch node: `description` and `commands` record                                             |
 | `GyozaNode`      | Union of `Command \| CommandGroup`                                                           |
@@ -364,19 +396,20 @@ Namespace keys in the registry are the argv tokens — keep them short, lowercas
 
 ```text
 gyoza/
-├── cli.ts                      ← entry point; recursive dispatch down the command tree
+├── cli.ts                      ← entry point; loads config, injects custom scripts, dispatches
 ├── index.ts                    ← barrel export
 ├── src/
+│   ├── config.ts               ← GyozaConfig, CustomScripts, loadConfig
 │   ├── gyoza.ts                ← factory: gyoza(), Command, CommandGroup, GyozaNode
 │   └── commands/
 │       ├── index.ts            ← root registry (the top-level gyoza() call)
 │       ├── build.ts            ← build command
 │       ├── update.ts           ← update command
 │       ├── generate/
-│       │   ├── index.ts        ← generateGroup (gyoza() call)
+│       │   ├── index.ts        ← generateGroup + KnownGenerateCommand type
 │       │   └── env.ts          ← generate env
 │       └── init/
-│           ├── index.ts        ← initGroup (gyoza() call)
+│           ├── index.ts        ← initGroup + KnownInitCommand type
 │           └── config.ts       ← init config
 └── package.json
 ```

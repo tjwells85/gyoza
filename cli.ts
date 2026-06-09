@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { registry } from './src/commands/index.ts';
+import { loadConfig } from './src/config.ts';
 import { isCommand } from './src/gyoza.ts';
 import type { Command, CommandGroup, GyozaNode } from './src/gyoza.ts';
 
@@ -78,5 +79,33 @@ const dispatch = async (node: GyozaNode, path: string[], args: string[]): Promis
 
   await dispatch(child, [...path, next], rest);
 };
+
+const injectCustomScripts = (
+  groupName: string,
+  scripts: Record<string, () => void | Promise<void>>,
+): void => {
+  const group = registry.commands[groupName];
+  if (!group || isCommand(group)) return;
+
+  for (const [name, fn] of Object.entries(scripts)) {
+    if (name in group.commands) {
+      console.warn(`  ⚠ Custom script "${groupName} ${name}" shadows a built-in command and will be ignored.`);
+      continue;
+    }
+    group.commands[name] = {
+      description: 'Custom script',
+      run: async (_args: string[]) => { await fn(); },
+    };
+  }
+};
+
+const config = await loadConfig(process.cwd());
+
+if (config.custom?.init) {
+  injectCustomScripts('init', config.custom.init as Record<string, () => void | Promise<void>>);
+}
+if (config.custom?.generate) {
+  injectCustomScripts('generate', config.custom.generate as Record<string, () => void | Promise<void>>);
+}
 
 await dispatch(registry, ['gyoza'], process.argv.slice(2));

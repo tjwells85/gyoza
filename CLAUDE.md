@@ -37,26 +37,41 @@ The `bin` entry in `package.json` points straight at `cli.ts`.
 ```
 gyoza/
 ├── CLAUDE.md
+├── changelog.md
 ├── package.json
 ├── tsconfig.json
-├── cli.ts                  ← bin entry point, subcommand dispatcher
+├── eslint.config.mjs
+├── .prettierrc.mjs
+├── cli.ts                  ← bin entry point, tree-walking dispatcher
+├── index.ts                ← public type exports
 └── src/
+    ├── config.ts           ← GyozaConfig, CustomScripts, loadConfig
+    ├── gyoza.ts            ← Command/CommandGroup types, registry builder
     └── commands/
-        ├── generate.ts     ← env file generator (ported from template)
-        └── update.ts       ← dependency updater (ported from template)
+        ├── index.ts        ← registry root (assembles all groups)
+        ├── build.ts        ← gyoza build
+        ├── update.ts       ← gyoza update
+        ├── generate/
+        │   ├── index.ts    ← generateGroup + KnownGenerateCommand type
+        │   └── env.ts      ← gyoza generate env
+        └── init/
+            ├── index.ts    ← initGroup + KnownInitCommand type
+            └── config.ts   ← gyoza init config
 ```
 
-No CLI framework (no commander, yargs, etc.) — a simple argument switch in
-`cli.ts` is sufficient.
+No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
+`CommandGroup` registry; each leaf is a `Command` with a `run` handler.
 
 ### CLI commands
 
 | Invocation              | What it does                                      |
 |-------------------------|---------------------------------------------------|
-| `gyoza env:generate`    | Generate/update `.env` files from schema sources  |
+| `gyoza generate env`    | Generate/update `.env` files from schema sources  |
+| `gyoza init config`     | Scaffold or migrate `gyoza.config.ts`             |
 | `gyoza update`          | Interactive dependency updater                    |
 | `gyoza update --latest` | Update to latest versions (ignores semver range)  |
 | `gyoza update -y`       | Skip confirmation prompt                          |
+| `gyoza build`           | Build the project                                 |
 | `gyoza help`            | Print available commands                          |
 
 ### How it is consumed
@@ -139,46 +154,19 @@ noise without safety value in that pattern.
 
 ### Step 3 — `cli.ts` (entry point)
 
-The shebang line lets Bun execute the file directly as a bin script. Dispatch
-on `process.argv[2]`.
+The shebang line lets Bun execute the file directly as a bin script.
+`cli.ts` tree-walks the `registry` (`CommandGroup`) exported from
+`src/commands/index.ts`:
 
-```ts
-#!/usr/bin/env bun
+1. Load `gyoza.config.ts` via `loadConfig(process.cwd())`.
+2. Inject any `config.custom.init` / `config.custom.generate` scripts into
+   the live registry (see **Custom Scripts** below).
+3. Recursively walk argv tokens, dispatching to `CommandGroup` children or
+   invoking a leaf `Command.run(args)`.
+4. `--help` / `help` at any level prints contextual usage.
 
-import { generateEnv } from './src/commands/generate.ts';
-import { runUpdate } from './src/commands/update.ts';
-
-const command = process.argv[2];
-
-switch (command) {
-  case 'env:generate':
-    await generateEnv();
-    break;
-
-  case 'update':
-    await runUpdate(process.argv.slice(3));
-    break;
-
-  case 'help':
-  case undefined:
-    console.log(`
-gyoza — hono-react-template tooling
-
-Commands:
-  env:generate          Generate/update .env files from schema sources
-  update                Interactive dependency updater
-  update --latest       Update to latest versions
-  update -y             Skip confirmation prompt
-  help                  Show this message
-    `.trim());
-    break;
-
-  default:
-    console.error(`Unknown command: ${command}`);
-    console.error('Run "gyoza help" for available commands.');
-    process.exit(1);
-}
-```
+The `dispatch` function handles the walk; `printGroupHelp` / `printCommandHelp`
+format usage output from the registry metadata.
 
 ---
 
@@ -437,6 +425,58 @@ Before considering the initial implementation complete:
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings
+
+---
+
+## Custom Scripts
+
+Projects can register project-specific subcommands under `gyoza init` and
+`gyoza generate` via the `custom` field in `gyoza.config.ts`:
+
+```ts
+import type { GyozaConfig } from 'gyoza';
+
+export default {
+  custom: {
+    init: {
+      printHello: () => console.log('Hello!'),
+    },
+    generate: {
+      scaffold: async () => {
+        // any async logic
+      },
+    },
+  },
+} satisfies GyozaConfig;
+```
+
+Running `gyoza init printHello` or `gyoza generate scaffold` invokes the
+corresponding function.
+
+### Collision rules
+
+- Built-in commands always win. If a custom script shares a name with a
+  built-in, gyoza prints a warning at startup and ignores the custom entry.
+- TypeScript enforces this at config-authoring time: the `CustomScripts` type
+  uses an intersection type that makes known command names resolve to `never`,
+  producing a compile error if a reserved name is used.
+
+### How the known-command guard stays in sync
+
+`KnownInitCommand` and `KnownGenerateCommand` are derived directly from the
+registry objects:
+
+```ts
+// src/commands/init/index.ts
+export const initGroup = gyoza('Project initialization commands', (cmd) => ({
+  config: cmd(...),
+}));
+export type KnownInitCommand = keyof typeof initGroup.commands; // 'config'
+```
+
+`src/config.ts` imports these types. No manual list to maintain — adding a new
+built-in command to `initGroup` or `generateGroup` automatically extends the
+collision guard.
 
 ---
 

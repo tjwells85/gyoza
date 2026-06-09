@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0] - 2026-06-09
+
+### Added
+
+- Custom scripts support via `custom` field in `gyoza.config.ts`
+  - `custom.init` — register project-specific subcommands under `gyoza init`
+  - `custom.generate` — register project-specific subcommands under `gyoza generate`
+  - Scripts are plain functions: `{ [name]: () => void | Promise<void> }`
+  - Built-in commands always take precedence; a warning is printed if a custom script name collides with a built-in
+  - TypeScript collision guard: known command names resolve to `never` in the `CustomScripts` type, producing a compile error if a reserved name is used in the config
+  - Known command types (`KnownInitCommand`, `KnownGenerateCommand`) are derived from the live registry objects — no manual list to maintain when new built-in commands are added
+- `CustomScripts` type exported from the package root
+
+### Changed
+
+- `KnownInitCommand` and `KnownGenerateCommand` types are now derived from `keyof typeof initGroup.commands` / `keyof typeof generateGroup.commands` in their respective index files
+- Documentation updated: README and CLAUDE.md reflect current package structure, command list, and the new custom scripts feature
+
+---
+
 ## [0.2.0] - 2026-05-12
 
 ### Added

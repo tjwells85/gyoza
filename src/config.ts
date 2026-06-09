@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { KnownGenerateCommand } from './commands/generate/index.ts';
+import type { KnownInitCommand } from './commands/init/index.ts';
 
 export interface BuildContext {
   projectRoot: string;
@@ -58,8 +60,18 @@ export interface BuildConfig {
   steps?: BuildStep[];
 }
 
+type ForbidKnown<TKnown extends string> =
+  & { [K: string]: () => void | Promise<void> }
+  & { [K in TKnown]?: never };
+
+export interface CustomScripts {
+  init?: ForbidKnown<KnownInitCommand>;
+  generate?: ForbidKnown<KnownGenerateCommand>;
+}
+
 export interface GyozaConfig {
   build?: BuildConfig;
+  custom?: CustomScripts;
 }
 
 export const defaultConfig: GyozaConfig = {
@@ -92,6 +104,7 @@ const mergeConfig = (base: GyozaConfig, override: Partial<GyozaConfig>): GyozaCo
       post:         o?.post         ?? b?.post  ?? [],
       steps:        o?.steps        ?? b?.steps ?? [],
     },
+    custom: override.custom ?? base.custom,
   };
 };
 
