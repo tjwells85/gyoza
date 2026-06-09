@@ -1,7 +1,5 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { KnownGenerateCommand } from './commands/generate/index.ts';
-import type { KnownInitCommand } from './commands/init/index.ts';
 
 export interface BuildContext {
   projectRoot: string;
@@ -60,13 +58,9 @@ export interface BuildConfig {
   steps?: BuildStep[];
 }
 
-type ForbidKnown<TKnown extends string> =
-  & { [K: string]: () => void | Promise<void> }
-  & { [K in TKnown]?: never };
-
 export interface CustomScripts {
-  init?: ForbidKnown<KnownInitCommand>;
-  generate?: ForbidKnown<KnownGenerateCommand>;
+  init?: Record<string, () => void | Promise<void>>;
+  generate?: Record<string, () => void | Promise<void>>;
 }
 
 export interface GyozaConfig {

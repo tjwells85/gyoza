@@ -202,8 +202,8 @@ export default {
 **Collision rules:**
 
 - Built-in commands always win. If a custom script name matches a built-in, gyoza prints a warning at startup and ignores the custom entry.
-- TypeScript enforces this at config-authoring time — known command names resolve to `never` in the `CustomScripts` type, so your editor will flag a collision before you run anything.
-- The known-command types (`KnownInitCommand`, `KnownGenerateCommand`) are derived directly from the registry objects, so they automatically include any new built-in commands added to gyoza.
+- The collision check is runtime-only. TypeScript's index signature intersection rules make a compile-time guard for this pattern unworkable.
+- `KnownInitCommand` and `KnownGenerateCommand` are exported types derived directly from the registry objects — they stay in sync automatically and are available for documentation or tooling use.
 
 ---
 

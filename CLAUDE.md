@@ -457,14 +457,14 @@ corresponding function.
 
 - Built-in commands always win. If a custom script shares a name with a
   built-in, gyoza prints a warning at startup and ignores the custom entry.
-- TypeScript enforces this at config-authoring time: the `CustomScripts` type
-  uses an intersection type that makes known command names resolve to `never`,
-  producing a compile error if a reserved name is used.
+- The collision check is runtime-only. TypeScript's index signature rules make
+  a compile-time guard unworkable here: an intersection of `{ [K: string]: Fn }`
+  and `{ knownKey?: never }` causes TypeScript to apply `never` to *all* keys,
+  not just the reserved one.
 
-### How the known-command guard stays in sync
+### How `KnownInitCommand` / `KnownGenerateCommand` stay in sync
 
-`KnownInitCommand` and `KnownGenerateCommand` are derived directly from the
-registry objects:
+These types are derived directly from the registry objects:
 
 ```ts
 // src/commands/init/index.ts
@@ -474,9 +474,9 @@ export const initGroup = gyoza('Project initialization commands', (cmd) => ({
 export type KnownInitCommand = keyof typeof initGroup.commands; // 'config'
 ```
 
-`src/config.ts` imports these types. No manual list to maintain — adding a new
-built-in command to `initGroup` or `generateGroup` automatically extends the
-collision guard.
+No manual list to maintain — adding a new built-in command to `initGroup` or
+`generateGroup` automatically updates the type. The types are exported for
+documentation and tooling purposes.
 
 ---
 
