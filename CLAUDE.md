@@ -520,10 +520,11 @@ legacy per-project script files left over from `hono-react-template`.
 
 Any script key that:
 1. Contains `'env'` (case-insensitive), AND
-2. Is not one of the target keys above, AND
-3. Its value does not call `gyoza`
+2. Is not one of the target keys above
 
-...is **removed**. This cleans up old aliases like `env:generate` or `prepare:env`.
+...is **removed**, regardless of its value. This standardizes all env-related
+scripts to the canonical `generate:env` key — even `"env:generate": "gyoza generate env"`
+is replaced, since the old key name is the issue, not the value.
 
 ### `./scripts/` folder cleanup
 

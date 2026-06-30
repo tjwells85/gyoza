@@ -40,14 +40,13 @@ export const run = async (args: string[]): Promise<void> => {
   const changes: ScriptChange[] = [];
 
   // 1. Legacy 'env' script removals (process before upserts so we don't
-  //    accidentally remove a target key like 'generate:env' we're about to add)
+  //    accidentally remove a target key like 'generate:env' we're about to add).
+  //    The gyoza-skip guard is intentionally absent here: 'env:generate' calling
+  //    'gyoza generate env' is still legacy naming and should be replaced by
+  //    the canonical 'generate:env' target key.
   const targetKeys = new Set(TARGET_SCRIPTS.map(([k]) => k));
   for (const key of Object.keys(scripts)) {
-    if (
-      key.toLowerCase().includes('env') &&
-      !targetKeys.has(key) &&
-      !scripts[key]?.includes('gyoza')
-    ) {
+    if (key.toLowerCase().includes('env') && !targetKeys.has(key)) {
       changes.push({ kind: 'remove', key, oldValue: scripts[key] ?? '' });
     }
   }

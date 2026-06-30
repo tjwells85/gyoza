@@ -32,7 +32,7 @@ For each target script:
 
 ### Legacy 'env' script removal
 
-Any script key that contains `'env'` (case-insensitive), is not one of the target keys above, and whose value doesn't call `gyoza` is **removed**. This cleans up old naming conventions like `env:generate` or `prepare:env` that predate gyoza.
+Any script key that contains `'env'` (case-insensitive) and is not one of the target keys above is **removed**, regardless of its value. This standardizes all env-related scripts to the canonical `generate:env` key — even scripts like `"env:generate": "gyoza generate env"` that already call gyoza under the old naming convention are replaced.
 
 ### `./scripts/` folder cleanup
 
@@ -96,7 +96,7 @@ After migration, if `eslint-migration.md` exists in the project root (from a pre
 Applied in order to every file:
 
 1. **Remove standalone `@ts-*` lines** — any line matching `/^\s*\/\/ @ts-\S+/` is dropped (`@ts-check`, `@ts-nocheck`, `@ts-ignore`, `@ts-expect-error`).
-2. **Strip inline `@ts-*` trailing comments** — removes ` // @ts-\S+.*` from the end of lines that also contain code.
+2. **Strip inline `@ts-*` trailing comments** — removes `// @ts-\S+.*` (with a leading space) from the end of lines that also contain code.
 3. **Inject JSDoc before `defineConfig(`** — inserts `/** @type {import('eslint').Linter.Config[]} */` on the line immediately before any line containing `defineConfig(`, unless that comment is already the previous non-blank line.
 4. **Collapse consecutive blank lines** — runs of 2+ blank lines are reduced to one, cleaning up gaps left by removed directive lines.
 
