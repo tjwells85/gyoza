@@ -56,7 +56,8 @@ gyoza/
         │   └── env.ts      ← gyoza generate env
         └── init/
             ├── index.ts    ← initGroup + KnownInitCommand type
-            └── config.ts   ← gyoza init config
+            ├── config.ts   ← gyoza init config
+            └── eslint.ts   ← gyoza init eslint
 ```
 
 No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
@@ -64,15 +65,17 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 
 ### CLI commands
 
-| Invocation              | What it does                                      |
-|-------------------------|---------------------------------------------------|
-| `gyoza generate env`    | Generate/update `.env` files from schema sources  |
-| `gyoza init config`     | Scaffold or migrate `gyoza.config.ts`             |
-| `gyoza update`          | Interactive dependency updater                    |
-| `gyoza update --latest` | Update to latest versions (ignores semver range)  |
-| `gyoza update -y`       | Skip confirmation prompt                          |
-| `gyoza build`           | Build the project                                 |
-| `gyoza help`            | Print available commands                          |
+| Invocation                  | What it does                                                |
+|-----------------------------|-------------------------------------------------------------|
+| `gyoza generate env`        | Generate/update `.env` files from schema sources            |
+| `gyoza init config`         | Scaffold or migrate `gyoza.config.ts`                       |
+| `gyoza init eslint`         | Migrate `eslint.config.mts` → `.mjs` in all workspaces     |
+| `gyoza init eslint --dry`   | Preview migration output in `eslint-migration.md`           |
+| `gyoza update`              | Interactive dependency updater                              |
+| `gyoza update --latest`     | Update to latest versions (ignores semver range)            |
+| `gyoza update -y`           | Skip confirmation prompt                                    |
+| `gyoza build`               | Build the project                                           |
+| `gyoza help`                | Print available commands                                    |
 
 ### How it is consumed
 
@@ -422,6 +425,10 @@ Before considering the initial implementation complete:
 - [ ] `gyoza update` shows the outdated report and prompts for confirmation
 - [ ] `gyoza update -y` skips the prompt
 - [ ] `gyoza update --latest` uses latest versions
+- [ ] `gyoza init eslint --dry` writes `eslint-migration.md` with four sections; sections with no `.mts` file say "not found"
+- [ ] `gyoza init eslint` renames `.mts` → `.mjs`, strips `@ts-*` directives, injects JSDoc before `defineConfig(`
+- [ ] `gyoza init eslint` skips a directory when `.mjs` already exists and prints a warning
+- [ ] `gyoza init eslint` prompts to remove `eslint-migration.md` if it exists after migration
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings
@@ -470,13 +477,66 @@ These types are derived directly from the registry objects:
 // src/commands/init/index.ts
 export const initGroup = gyoza('Project initialization commands', (cmd) => ({
   config: cmd(...),
+  eslint: cmd(...),
 }));
-export type KnownInitCommand = keyof typeof initGroup.commands; // 'config'
+export type KnownInitCommand = keyof typeof initGroup.commands; // 'config' | 'eslint'
 ```
 
 No manual list to maintain — adding a new built-in command to `initGroup` or
 `generateGroup` automatically updates the type. The types are exported for
 documentation and tooling purposes.
+
+---
+
+## `gyoza init eslint` — ESLint Config Migration
+
+Migrates `eslint.config.mts` files to `eslint.config.mjs` in these locations
+(searched in order): `./`, `frontend/`, `server/`, `shared/`.
+
+### Flags
+
+| Flag    | Effect                                                       |
+|---------|--------------------------------------------------------------|
+| `--dry` | Write `eslint-migration.md` preview; do not touch any files  |
+
+### `--dry` mode output
+
+Writes `eslint-migration.md` to `process.cwd()` with four `##` sections (one
+per search directory). Each section contains either:
+- `` `eslint.config.mts` not found `` — if no `.mts` exists in that directory
+- A fenced ` ```js ` block with the fully-transformed output — if `.mts` exists
+
+If `.mts` exists but `.mjs` also exists, a blockquote note is inserted above
+the code block: `> Note: eslint.config.mjs already exists — would be skipped`.
+
+### Normal mode behaviour
+
+Per directory:
+1. Skip silently if no `.mts` exists.
+2. Skip with a `⚠` warning if `.mjs` already exists.
+3. Otherwise: transform the `.mts` content, write `.mjs`, delete `.mts`.
+
+After all directories are processed, if `eslint-migration.md` exists in the
+project root, the user is prompted `[Y/n]` to remove it (default yes).
+
+### Transformation rules (`src/commands/init/eslint.ts → transform()`)
+
+Applied in order to every migrated file:
+
+1. **Remove standalone `@ts-*` directive lines** — any line matching
+   `/^\s*\/\/ @ts-\S+/` is dropped entirely (handles `@ts-check`,
+   `@ts-nocheck`, `@ts-ignore`, `@ts-expect-error`).
+
+2. **Strip inline `@ts-*` trailing comments** — removes ` // @ts-\S+.*`
+   from the end of lines that also contain code.
+
+3. **Inject JSDoc before `defineConfig(`** — when a line contains
+   `defineConfig(`, inserts `/** @type {import('eslint').Linter.Config[]} */`
+   on the line immediately before it, unless that comment is already the
+   previous non-blank line.
+
+4. **Collapse consecutive blank lines** — runs of 2+ blank lines are reduced
+   to one (cleaning up gaps left by removed directive lines).
 
 ---
 

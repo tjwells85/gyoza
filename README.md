@@ -143,6 +143,21 @@ If no `gyoza.config.ts` exists the build proceeds normally with no extra steps.
 
 ---
 
+### `init eslint`
+
+Migrates `eslint.config.mts` files to `eslint.config.mjs` across all workspaces (`./`, `frontend/`, `server/`, `shared/`). Each file is transformed in place: TypeScript-only `// @ts-*` directives are removed, and a `/** @type {import('eslint').Linter.Config[]} */` JSDoc is inserted before any `defineConfig(` call so type information is preserved in plain JS. Directories that already have an `.mjs` file are skipped.
+
+```bash
+gyoza init eslint          # migrate all workspaces
+gyoza init eslint --dry    # preview — writes eslint-migration.md, touches nothing
+```
+
+**`--dry` mode** writes `eslint-migration.md` to the project root. The file has four sections — one per workspace. Each section shows either `eslint.config.mts not found` or a `js` code block containing the fully-transformed output. Run this first to review all four files before committing.
+
+After a normal migration, if `eslint-migration.md` exists from a previous dry run, gyoza prompts to remove it.
+
+---
+
 ### `init config`
 
 Scaffolds a `gyoza.config.ts` in the project root. If a legacy config (using `export const buildSteps`) is detected, migrates it to the current format instead of failing.
@@ -410,7 +425,8 @@ gyoza/
 │       │   └── env.ts          ← generate env
 │       └── init/
 │           ├── index.ts        ← initGroup + KnownInitCommand type
-│           └── config.ts       ← init config
+│           ├── config.ts       ← init config
+│           └── eslint.ts       ← init eslint
 └── package.json
 ```
 

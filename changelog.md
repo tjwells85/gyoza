@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0] - 2026-06-30
+
+### Added
+
+- `gyoza init eslint` — migrates `eslint.config.mts` → `eslint.config.mjs` across all workspaces (`./`, `frontend/`, `server/`, `shared/`)
+  - Strips TypeScript-only `// @ts-*` directive lines (and inline trailing `// @ts-*` comments)
+  - Injects `/** @type {import('eslint').Linter.Config[]} */` before `defineConfig(` calls
+  - Skips directories where `.mjs` already exists, with a `⚠` warning
+  - `--dry` flag writes `eslint-migration.md` to the project root with a preview of all four transformations without touching any files
+  - After a normal migration, prompts to remove `eslint-migration.md` if it exists from a previous dry run
+
+---
+
 ## [0.3.0] - 2026-06-09
 
 ### Added
