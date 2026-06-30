@@ -57,7 +57,8 @@ gyoza/
         └── init/
             ├── index.ts    ← initGroup + KnownInitCommand type
             ├── config.ts   ← gyoza init config
-            └── eslint.ts   ← gyoza init eslint
+            ├── eslint.ts   ← gyoza init eslint
+            └── scripts.ts  ← gyoza init scripts
 ```
 
 No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
@@ -71,6 +72,8 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 | `gyoza init config`         | Scaffold or migrate `gyoza.config.ts`                       |
 | `gyoza init eslint`         | Migrate `eslint.config.mts` → `.mjs` in all workspaces     |
 | `gyoza init eslint --dry`   | Preview migration output in `eslint-migration.md`           |
+| `gyoza init scripts`        | Upsert gyoza scripts in `package.json`, remove legacy files |
+| `gyoza init scripts --dry`  | Preview script changes in the console without applying them |
 | `gyoza update`              | Interactive dependency updater                              |
 | `gyoza update --latest`     | Update to latest versions (ignores semver range)            |
 | `gyoza update -y`           | Skip confirmation prompt                                    |
@@ -429,6 +432,10 @@ Before considering the initial implementation complete:
 - [ ] `gyoza init eslint` renames `.mts` → `.mjs`, strips `@ts-*` directives, injects JSDoc before `defineConfig(`
 - [ ] `gyoza init eslint` skips a directory when `.mjs` already exists and prints a warning
 - [ ] `gyoza init eslint` prompts to remove `eslint-migration.md` if it exists after migration
+- [ ] `gyoza init scripts --dry` prints a console preview of all script changes and file deletions without touching files
+- [ ] `gyoza init scripts` upserts the four target scripts, removes legacy 'env' aliases, deletes `scripts/build.ts` / `prepare.ts` / `update.ts` if present
+- [ ] `gyoza init scripts` skips a target script that already calls `gyoza` (customised)
+- [ ] `gyoza init scripts` deletes `./scripts/` folder when it becomes empty
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings
@@ -476,15 +483,70 @@ These types are derived directly from the registry objects:
 ```ts
 // src/commands/init/index.ts
 export const initGroup = gyoza('Project initialization commands', (cmd) => ({
-  config: cmd(...),
-  eslint: cmd(...),
+  config:  cmd(...),
+  eslint:  cmd(...),
+  scripts: cmd(...),
 }));
-export type KnownInitCommand = keyof typeof initGroup.commands; // 'config' | 'eslint'
+export type KnownInitCommand = keyof typeof initGroup.commands; // 'config' | 'eslint' | 'scripts'
 ```
 
 No manual list to maintain — adding a new built-in command to `initGroup` or
 `generateGroup` automatically updates the type. The types are exported for
 documentation and tooling purposes.
+
+---
+
+## `gyoza init scripts` — Package.json Script Upsert
+
+Upserts canonical gyoza scripts in the project root `package.json` and removes
+legacy per-project script files left over from `hono-react-template`.
+
+### Target scripts
+
+| Key              | Command                 |
+|------------------|-------------------------|
+| `build`          | `gyoza build`           |
+| `update:all`     | `gyoza update`          |
+| `update:latest`  | `gyoza update --latest` |
+| `generate:env`   | `gyoza generate env`    |
+
+### Skip / replace / add logic (per target script)
+
+- If the existing script value contains `gyoza` anywhere → **skip** (assume customised).
+- If the script key exists but the value doesn't call `gyoza` → **replace**.
+- If the script key is absent → **add**.
+
+### Legacy 'env' script removal
+
+Any script key that:
+1. Contains `'env'` (case-insensitive), AND
+2. Is not one of the target keys above, AND
+3. Its value does not call `gyoza`
+
+...is **removed**. This cleans up old aliases like `env:generate` or `prepare:env`.
+
+### `./scripts/` folder cleanup
+
+If `./scripts/` exists, `build.ts`, `prepare.ts`, and `update.ts` are deleted
+individually if present. After deletion, if the folder is empty it is also
+removed. Other files in the folder are left untouched.
+
+### `--dry` mode
+
+Prints a two-section console report without touching any files:
+
+```
+Scripts (package.json):
+  "build": "bun run scripts/build.ts" -> "build": "gyoza build"
+  "env:generate": "bun run scripts/generate.ts" -> REMOVED
+  "generate:env": (none) -> "generate:env": "gyoza generate env"
+
+Script files:
+  scripts/build.ts -> DELETED
+  scripts/ -> DELETED (empty after removals)
+```
+
+If nothing would change, prints `  No changes needed.`
 
 ---
 

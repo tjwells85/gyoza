@@ -4,6 +4,11 @@
 
 ### Added
 
+- `gyoza init scripts` — upserts canonical gyoza scripts in the project root `package.json` and removes legacy per-project script files
+  - Upserts `build`, `update:all`, `update:latest`, `generate:env` — skips any that already call `gyoza` (assumed customised)
+  - Removes script keys containing `'env'` that don't call `gyoza` (cleans up old aliases like `env:generate`, `prepare:env`)
+  - Deletes `scripts/build.ts`, `scripts/prepare.ts`, `scripts/update.ts` if present; removes `scripts/` folder if it becomes empty
+  - `--dry` flag prints a console preview without modifying any files
 - `gyoza init eslint` — migrates `eslint.config.mts` → `eslint.config.mjs` across all workspaces (`./`, `frontend/`, `server/`, `shared/`)
   - Strips TypeScript-only `// @ts-*` directive lines (and inline trailing `// @ts-*` comments)
   - Injects `/** @type {import('eslint').Linter.Config[]} */` before `defineConfig(` calls
