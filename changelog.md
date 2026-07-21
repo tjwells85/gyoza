@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.1] - 2026-07-21
+
+### Fixed
+
+- `gyoza generate env` — server env.ts fields whose zod chain is wrapped onto multiple lines by Prettier (e.g. `KEY: z\n  .string()\n  .refine(...)`) were silently dropped: the field, its comments, and its directive never made it into the generated `.env` at all
+  - `parseEnvTs` now tracks paren/brace depth across lines to find where a chained field declaration actually ends, instead of requiring `z.` on the same line as the key
+  - `.default(...)` extraction now runs against the full joined multi-line chain instead of just the first line
+- `validateGeneratedEnv` — the "is this key present" check used a plain substring match, so a field name that was a suffix of another key (e.g. `URL` vs `POSTGRES_URL`) could be masked as present when it was actually missing; the check is now anchored to the start of a line
+
+### Added
+
+- Unit tests for `gyoza generate env` (`tests/generate-env.test.ts`) covering both the server (`env.ts`) and frontend (`env.d.ts`) parsers: every directive (`@generate uuid/base64/alphanumeric`, `@pgurl`, `@mongourl`, `@mysqlurl`, `@apiurl`, `@placeholder`), multi-line chains, single- and multi-line JSDoc sections, directive-vs-default rendering precedence, and existing `.env` value overrides
+
+---
+
 ## [0.4.0] - 2026-06-30
 
 ### Added

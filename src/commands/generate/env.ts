@@ -35,7 +35,7 @@ const generateAlphanumeric = (length: number): string => {
   return result;
 };
 
-const generateValue = (directive: string): string => {
+export const generateValue = (directive: string): string => {
   if (directive.startsWith('@generate base64:')) {
     const length = parseInt(directive.split(':')[1], 10);
     return generateBase64(length);
@@ -67,7 +67,7 @@ const extractDefault = (fieldLine: string): string | undefined => {
   return match ? match[2] : undefined;
 };
 
-const parseEnvTs = (src: string): EnvField[] => {
+export const parseEnvTs = (src: string): EnvField[] => {
   const lines = src.split('\n');
   const fields: EnvField[] = [];
 
@@ -143,9 +143,27 @@ const parseEnvTs = (src: string): EnvField[] => {
       continue;
     }
 
-    if (trimmed.match(/^\w+:\s*z\./)) {
+    if (trimmed.match(/^\w+:\s*z\b/)) {
       const fieldName = trimmed.split(':')[0];
-      const defaultValue = extractDefault(line);
+      const fieldLines: string[] = [line];
+
+      const depthDelta = (s: string): number => (s.match(/[({]/g) || []).length - (s.match(/[)}]/g) || []).length;
+
+      let depth = depthDelta(line);
+      let complete = depth === 0 && /,\s*$/.test(trimmed);
+
+      // Prettier can wrap long chains onto multiple lines (e.g. `KEY: z\n  .string()...`).
+      // Keep consuming lines until the bracket depth returns to zero at a trailing comma,
+      // so multi-line field definitions aren't dropped or truncated.
+      while (!complete && i + 1 < objectLines.length) {
+        i++;
+        const nextLine = objectLines[i];
+        fieldLines.push(nextLine);
+        depth += depthDelta(nextLine);
+        complete = depth === 0 && /,\s*$/.test(nextLine.trim());
+      }
+
+      const defaultValue = extractDefault(fieldLines.join('\n'));
 
       fields.push({
         kind: 'field',
@@ -165,7 +183,7 @@ const parseEnvTs = (src: string): EnvField[] => {
   return fields;
 };
 
-const parseEnvFile = (path: string): Record<string, string> => {
+export const parseEnvFile = (path: string): Record<string, string> => {
   if (!existsSync(path)) return {};
 
   const content = readFileSync(path, 'utf-8');
@@ -184,7 +202,7 @@ const parseEnvFile = (path: string): Record<string, string> => {
   return env;
 };
 
-const renderEnv = (fields: EnvField[], existing: Record<string, string>): string => {
+export const renderEnv = (fields: EnvField[], existing: Record<string, string>): string => {
   const lines: string[] = [];
 
   for (const field of fields) {
@@ -223,14 +241,14 @@ const renderEnv = (fields: EnvField[], existing: Record<string, string>): string
   return lines.join('\n').trim() + '\n';
 };
 
-const validateGeneratedEnv = (fields: EnvField[], content: string): string[] => {
+export const validateGeneratedEnv = (fields: EnvField[], content: string): string[] => {
   const errors: string[] = [];
   const zodPattern = /z\.(string|coerce|boolean|number|preprocess|email|url|ipv4)\(/;
 
   for (const field of fields) {
     if (field.kind !== 'field') continue;
 
-    if (!content.includes(`${field.name}=`)) {
+    if (!new RegExp(`^#?\\s*${field.name}=`, 'm').test(content)) {
       errors.push(`Key "${field.name}" is missing from generated output`);
       continue;
     }
@@ -273,7 +291,7 @@ const writeEnvSafe = (envPath: string, backupPath: string, content: string, fiel
   }
 };
 
-const parseFrontendEnvTs = (src: string): EnvField[] => {
+export const parseFrontendEnvTs = (src: string): EnvField[] => {
   const lines = src.split('\n');
   const fields: EnvField[] = [];
 
@@ -365,7 +383,7 @@ const parseFrontendEnvTs = (src: string): EnvField[] => {
   return fields;
 };
 
-const correctFrontendEnvReadonly = (src: string): string => {
+export const correctFrontendEnvReadonly = (src: string): string => {
   const lines = src.split('\n');
   let interfaceStart = -1;
   let interfaceEnd = -1;
