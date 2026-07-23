@@ -77,6 +77,7 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 | `gyoza update`              | Interactive dependency updater                              |
 | `gyoza update --latest`     | Update to latest versions (ignores semver range)            |
 | `gyoza update -y`           | Skip confirmation prompt                                    |
+| `gyoza update --force`      | Also update packages pinned to an exact version              |
 | `gyoza build`               | Build the project                                           |
 | `gyoza help`                | Print available commands                                    |
 

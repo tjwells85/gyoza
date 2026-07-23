@@ -8,6 +8,7 @@ export const description = 'Interactive dependency updater';
 export const flags: CommandFlag[] = [
   { flag: '--latest', description: 'Update to latest versions (ignores semver range)' },
   { flag: '-y, --yes', description: 'Skip confirmation prompt' },
+  { flag: '--force', description: 'Ignore pinned versions and update them like any other package' },
 ];
 
 type BunPackageJson = PackageJson & { catalog: Record<string, string> };
@@ -15,6 +16,7 @@ type BunPackageJson = PackageJson & { catalog: Record<string, string> };
 const rootPackagePath = join(process.cwd(), 'package.json');
 const frontendPackagePath = join(process.cwd(), 'frontend', 'package.json');
 const serverPackagePath = join(process.cwd(), 'server', 'package.json');
+const sharedPackagePath = join(process.cwd(), 'shared', 'package.json');
 
 const getCatalogPackages = async (): Promise<Map<string, string>> => {
   const catalogMap = new Map<string, string>();
@@ -26,6 +28,74 @@ const getCatalogPackages = async (): Promise<Map<string, string>> => {
   }
 
   return catalogMap;
+};
+
+type PinnedEntry = {
+  file: string;
+  section: 'dependencies' | 'devDependencies' | 'catalog';
+  name: string;
+  version: string;
+};
+
+// Exact version, e.g. "6.0.3" — not a range, tag, or protocol like "catalog:"/"workspace:*".
+const isPinnedVersion = (version: string): boolean => /^\d+\.\d+\.\d+/.test(version.trim());
+
+const collectPinnedEntries = async (packagePath: string): Promise<PinnedEntry[]> => {
+  const file = Bun.file(packagePath);
+  if (!(await file.exists())) return [];
+
+  const pkg: BunPackageJson = await file.json();
+  const entries: PinnedEntry[] = [];
+
+  const scan = (section: 'dependencies' | 'devDependencies' | 'catalog', deps?: Partial<Record<string, string>>) => {
+    if (!deps) return;
+    for (const [name, version] of Object.entries(deps)) {
+      if (version && isPinnedVersion(version)) {
+        entries.push({ file: packagePath, section, name, version });
+      }
+    }
+  };
+
+  scan('dependencies', pkg.dependencies);
+  scan('devDependencies', pkg.devDependencies);
+  scan('catalog', pkg.catalog);
+
+  return entries;
+};
+
+const collectAllPinnedEntries = async (): Promise<PinnedEntry[]> => {
+  const paths = [rootPackagePath, frontendPackagePath, serverPackagePath, sharedPackagePath];
+  const results = await Promise.all(paths.map(collectPinnedEntries));
+  return results.flat();
+};
+
+const restorePinnedEntries = async (entries: PinnedEntry[]): Promise<void> => {
+  if (entries.length === 0) return;
+
+  const byFile = new Map<string, PinnedEntry[]>();
+  for (const entry of entries) {
+    const list = byFile.get(entry.file) ?? [];
+    list.push(entry);
+    byFile.set(entry.file, list);
+  }
+
+  for (const [file, fileEntries] of byFile.entries()) {
+    const pkg: BunPackageJson = await Bun.file(file).json();
+    let changed = false;
+
+    for (const { section, name, version } of fileEntries) {
+      const deps = pkg[section] as Record<string, string> | undefined;
+      if (deps && deps[name] !== undefined && deps[name] !== version) {
+        deps[name] = version;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await Bun.write(file, JSON.stringify(pkg, null, 2));
+      console.log(`Restored pinned versions in ${file}.`);
+    }
+  }
 };
 
 type OutdatedPackage = {
@@ -64,50 +134,56 @@ const getWorkspaceOutdated = async (cwd: string): Promise<OutdatedPackage[]> => 
   return parseOutdatedTable(text);
 };
 
-const printWorkspaceOutdated = (
-  label: string,
-  updatable: OutdatedPackage[],
-  pinned: OutdatedPackage[],
-  useLatest: boolean,
-): void => {
-  if (updatable.length === 0 && pinned.length === 0) return;
+const printWorkspaceOutdated = (label: string, updatable: OutdatedPackage[], useLatest: boolean): void => {
+  if (updatable.length === 0) return;
 
   console.log(`\nWorkspace: ${label}`);
 
-  if (updatable.length > 0) {
-    const nameWidth = Math.max(10, ...updatable.map(p => p.name.length));
-    const currentWidth = Math.max(9, ...updatable.map(p => p.current.length));
-    const newWidth = Math.max(11, ...updatable.map(p => (useLatest ? p.latest : p.update).length));
-    const totalWidth = nameWidth + currentWidth + newWidth + 6;
+  const nameWidth = Math.max(10, ...updatable.map(p => p.name.length));
+  const currentWidth = Math.max(9, ...updatable.map(p => p.current.length));
+  const newWidth = Math.max(11, ...updatable.map(p => (useLatest ? p.latest : p.update).length));
+  const totalWidth = nameWidth + currentWidth + newWidth + 6;
 
-    console.log('─'.repeat(totalWidth));
-    console.log(`${'Package'.padEnd(nameWidth)}  ${'Current'.padEnd(currentWidth)}  New Version`);
-    console.log('─'.repeat(totalWidth));
+  console.log('─'.repeat(totalWidth));
+  console.log(`${'Package'.padEnd(nameWidth)}  ${'Current'.padEnd(currentWidth)}  New Version`);
+  console.log('─'.repeat(totalWidth));
 
-    for (const pkg of updatable) {
-      const newVersion = useLatest ? pkg.latest : pkg.update;
-      console.log(`${pkg.name.padEnd(nameWidth)}  ${pkg.current.padEnd(currentWidth)}  ${newVersion}`);
-    }
-  }
-
-  if (pinned.length > 0) {
-    const nameWidth = Math.max(10, ...pinned.map(p => p.name.length));
-    const currentWidth = Math.max(9, ...pinned.map(p => p.current.length));
-    const latestWidth = Math.max(6, ...pinned.map(p => p.latest.length));
-    const totalWidth = nameWidth + currentWidth + latestWidth + 6;
-
-    console.log('\n  Pinned (skipped):');
-    console.log('  ' + '─'.repeat(totalWidth));
-    console.log(`  ${'Package'.padEnd(nameWidth)}  ${'Current'.padEnd(currentWidth)}  Latest`);
-    console.log('  ' + '─'.repeat(totalWidth));
-
-    for (const pkg of pinned) {
-      console.log(`  ${pkg.name.padEnd(nameWidth)}  ${pkg.current.padEnd(currentWidth)}  ${pkg.latest}`);
-    }
+  for (const pkg of updatable) {
+    const newVersion = useLatest ? pkg.latest : pkg.update;
+    console.log(`${pkg.name.padEnd(nameWidth)}  ${pkg.current.padEnd(currentWidth)}  ${newVersion}`);
   }
 };
 
-const showOutdatedReport = async (useLatest: boolean): Promise<number> => {
+const printPinnedNotice = (pinnedEntries: PinnedEntry[], latestByName: Map<string, string>): void => {
+  const seen = new Set<string>();
+  const rows = pinnedEntries
+    .filter(entry => !seen.has(entry.name) && seen.add(entry.name))
+    .map(entry => ({ name: entry.name, pinned: entry.version, latest: latestByName.get(entry.name) }))
+    .filter((row): row is { name: string; pinned: string; latest: string } => !!row.latest && row.latest !== row.pinned);
+
+  if (rows.length === 0) return;
+
+  const nameWidth = Math.max(10, ...rows.map(r => r.name.length));
+  const pinnedWidth = Math.max(6, ...rows.map(r => r.pinned.length));
+  const totalWidth = nameWidth + pinnedWidth + 12;
+
+  console.log('Pinned versions (protected — pass --force to update anyway):');
+  console.log('─'.repeat(totalWidth));
+  console.log(`${'Package'.padEnd(nameWidth)}  ${'Pinned'.padEnd(pinnedWidth)}  Latest`);
+  console.log('─'.repeat(totalWidth));
+
+  for (const row of rows) {
+    console.log(`${row.name.padEnd(nameWidth)}  ${row.pinned.padEnd(pinnedWidth)}  ${row.latest}`);
+  }
+
+  console.log('');
+};
+
+const showOutdatedReport = async (
+  useLatest: boolean,
+  pinnedEntries: PinnedEntry[],
+  force: boolean,
+): Promise<number> => {
   const workspaces = [
     { label: 'root', cwd: process.cwd() },
     { label: 'frontend', cwd: join(process.cwd(), 'frontend') },
@@ -121,22 +197,29 @@ const showOutdatedReport = async (useLatest: boolean): Promise<number> => {
     workspaces.map(async w => {
       const all = await getWorkspaceOutdated(w.cwd);
       const updatable = all.filter(p => (useLatest ? p.latest : p.update) !== p.current);
-      const pinned = all.filter(
-        p => (useLatest ? p.latest : p.update) === p.current && p.latest !== p.current,
-      );
-      return { label: w.label, updatable, pinned };
+      return { label: w.label, all, updatable };
     }),
   );
 
+  if (!force && pinnedEntries.length > 0) {
+    const latestByName = new Map<string, string>();
+    for (const { all } of results) {
+      for (const pkg of all) {
+        if (!latestByName.has(pkg.name)) latestByName.set(pkg.name, pkg.latest);
+      }
+    }
+    printPinnedNotice(pinnedEntries, latestByName);
+  }
+
   const total = results.reduce((sum, r) => sum + r.updatable.length, 0);
 
-  if (total === 0 && results.every(r => r.pinned.length === 0)) {
+  if (total === 0) {
     console.log('All packages are up to date.\n');
     return 0;
   }
 
-  for (const { label, updatable, pinned } of results) {
-    printWorkspaceOutdated(label, updatable, pinned, useLatest);
+  for (const { label, updatable } of results) {
+    printWorkspaceOutdated(label, updatable, useLatest);
   }
 
   console.log('');
@@ -221,9 +304,11 @@ const runInstall = async (): Promise<void> => {
 const runUpdate = async (args: string[]): Promise<void> => {
   const latest = args.includes('--latest');
   const yes = args.includes('-y') || args.includes('--yes');
+  const force = args.includes('--force');
   const catalogMap = await getCatalogPackages();
+  const pinnedEntries = force ? [] : await collectAllPinnedEntries();
 
-  const updateCount = await showOutdatedReport(latest);
+  const updateCount = await showOutdatedReport(latest, pinnedEntries, force);
   if (updateCount === 0) process.exit(0);
 
   const confirmed = yes || (await confirmUpdate(updateCount));
@@ -237,6 +322,7 @@ const runUpdate = async (args: string[]): Promise<void> => {
   await catalogifyWorkspaceDependencies(frontendPackagePath, catalogMap);
   await catalogifyWorkspaceDependencies(serverPackagePath, catalogMap);
   await updateRootCatalog(catalogMap);
+  await restorePinnedEntries(pinnedEntries);
   await runInstall();
 };
 

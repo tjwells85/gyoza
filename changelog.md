@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] - 2026-07-23
+
+### Fixed
+
+- `gyoza update --latest` — packages pinned to an exact version (e.g. `"typescript": "6.0.3"`) were bumped to latest like any other package, since `--latest` ignores semver ranges entirely; a preflight scan now records exact-pinned versions across the root, `frontend/`, `server/`, and `shared/` `package.json` (including the root `catalog`) and restores them after `bun update` runs and catalog references are rewritten, before the final `bun install`
+
+### Added
+
+- `gyoza update --force` — bypasses pinned-version protection so exact-pinned packages update like any other
+- `gyoza update` now prints a "Pinned versions (protected — pass --force to update anyway)" notice before prompting, showing each pinned package's current pin and the latest available version, when not using `--force`
+
+---
+
 ## [0.4.1] - 2026-07-21
 
 ### Fixed
