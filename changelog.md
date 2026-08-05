@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.6.0] - 2026-08-05
+
+### Added
+
+- `gyoza add` and `gyoza remove` — wrappers around `bun add` / `bun remove` that plug the gap where bun has no CLI affordance for writing to a workspace catalog (`bun add` has no `--catalog` flag and there is no `bun catalog` command). Without `--catalog` both commands are pure passthroughs to bun, argv untouched
+  - `gyoza add --catalog server,frontend,shared date-fns` resolves the version, appends it to the root `catalog`, and writes `"date-fns": "catalog:"` into each named workspace, then runs a single `bun install`
+  - Version specs are supported: `date-fns@beta` and `date-fns@^3.0.4` both work. Bare names and dist-tags are resolved via `bun info` and caret-ranged; explicit versions and ranges are stored verbatim, matching what `bun add pkg@^3.0.4` writes
+  - Prereleases (`react@next`) are pinned exactly rather than caret-ranged — `^19.3.0-canary…` would match a stable release
+  - Unknown dist-tags are an error. `bun info pkg@bogustag` silently falls back to `latest`, so the tag is validated against `bun info pkg dist-tags` first
+  - Adding a package already in the catalog without a version extends it to the new workspaces and leaves the catalog version alone — the existing workspaces are never bumped
+  - An explicit version that differs from the catalog entry prompts first, listing every workspace that references it, and defaults to no
+  - `gyoza remove --catalog <ws> <pkg>` removes it from those workspaces and offers to prune the root catalog entry once no workspace references it (defaults to yes)
+  - Flags: `--catalog <ws,...>` (also `--catalog=a,b`), `--dry`, `-y`/`--yes`, `-E`/`--exact`, `-d`/`--dev`, `--peer`, `--optional`. Workspace names are validated against the root `workspaces` array. Bun flags gyoza cannot honor in catalog mode (`-a`/`--analyze`, `--only-missing`) are rejected rather than silently dropped
+- Unit tests for both commands (`tests/catalog-add.test.ts`, `tests/catalog-remove.test.ts`) covering spec parsing including scoped packages, version-vs-dist-tag classification, workspace discovery and validation, the extend-without-bump path, the version-clash prompt, orphan pruning, and section moves
+- `gyoza upgrade` — updates gyoza itself and nothing else. Installed from git with no version range, gyoza is invisible to the normal update path in two separate ways: `bun install` will not move a git dependency whose spec is unchanged (the lockfile pins a commit and there is no range to re-satisfy), and `bun outdated` returns nothing at all for git dependencies, so gyoza can never appear in `gyoza update`'s report however far behind it is
+  - Runs `bun update gyoza` from whichever `package.json` declares it — root first, then workspaces — and reports the version change by reading the installed `package.json` on either side
+  - Prints the changelog entries between the old and new version, so it is immediately clear whether the upgrade changes behavior worth re-running
+  - A spec carrying an explicit ref (`#main`, `#v0.5.0`, `#61cd181`) is reported rather than rejected: a branch tracks and moves, a tag or commit does not, and the two cannot be told apart without querying the remote. When nothing changes, the message says why
+  - A pinned ref older than what is installed is reported as a **downgrade**, and the changelog section is suppressed in that direction
+  - Exits 1 with a clear message when no `package.json` declares gyoza (e.g. running via `bunx`) or when gyoza is running from a source checkout rather than `node_modules`
+- Unit tests for `gyoza upgrade` (`tests/upgrade.test.ts`) covering declaration lookup across root and workspaces, ref extraction, version comparison including prereleases and downgrades, and changelog range extraction
+
+### Changed
+
+- `gyoza update`'s description is now "Interactive updater for your project dependencies", to contrast with the neighbouring `gyoza upgrade`
+
+### Fixed
+
+- `gyoza help` — flag descriptions in the top-level command listing were sized from command-name lengths only, so any flag label longer than the widest command name ran straight into its description with no separating space
+
+---
+
 ## [0.5.0] - 2026-07-23
 
 ### Fixed

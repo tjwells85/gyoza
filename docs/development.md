@@ -188,10 +188,17 @@ gyoza/
 ├── src/
 │   ├── config.ts               ← GyozaConfig, CustomScripts, loadConfig
 │   ├── gyoza.ts                ← factory: gyoza(), Command, CommandGroup, GyozaNode
+│   ├── workspaces.ts           ← workspace discovery, catalog read/write helpers
+│   ├── catalog.ts              ← catalog-mode arg parsing, change application
+│   ├── version.ts              ← bun info version/dist-tag resolution
+│   ├── prompt.ts               ← shared Y/n confirmation
 │   └── commands/
 │       ├── index.ts            ← root registry (the top-level gyoza() call)
 │       ├── build.ts            ← build command
+│       ├── add.ts              ← add command
+│       ├── remove.ts           ← remove command
 │       ├── update.ts           ← update command
+│       ├── upgrade.ts          ← upgrade command (gyoza self-update)
 │       ├── generate/
 │       │   ├── index.ts        ← generateGroup + KnownGenerateCommand type
 │       │   └── env.ts          ← generate env

@@ -8,7 +8,12 @@ import type { Command, CommandGroup, GyozaNode } from './src/gyoza.ts';
 const printGroupHelp = (group: CommandGroup, path: string[]): void => {
   const isRoot = path.length === 1;
   const keys = Object.keys(group.commands);
-  const nameWidth = Math.max(...keys.map(k => k.length), isRoot ? 'help'.length : 0) + 2;
+  // Flags are indented two spaces deeper than command names, so their labels
+  // need those two columns counted to keep every description aligned.
+  const flagWidths = Object.values(group.commands).flatMap(node =>
+    isCommand(node) ? (node.flags ?? []).map(f => f.flag.length + 2) : [],
+  );
+  const nameWidth = Math.max(...keys.map(k => k.length), ...flagWidths, isRoot ? 'help'.length : 0) + 2;
   const lines = [
     isRoot ? group.description : `${path.join(' ')} — ${group.description}`,
     '',
@@ -19,7 +24,7 @@ const printGroupHelp = (group: CommandGroup, path: string[]): void => {
     lines.push(`  ${name.padEnd(nameWidth)}${node.description}`);
     if (isCommand(node)) {
       for (const { flag, description } of node.flags ?? []) {
-        lines.push(`    ${flag.padEnd(nameWidth)}${description}`);
+        lines.push(`    ${flag.padEnd(nameWidth - 2)}${description}`);
       }
     }
   }

@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import type { PackageJson } from 'type-fest';
 import type { CommandFlag } from '../gyoza.ts';
 
-export const description = 'Interactive dependency updater';
+// Phrased to contrast with `gyoza upgrade`, which updates gyoza itself.
+export const description = 'Interactive updater for your project dependencies';
 
 export const flags: CommandFlag[] = [
   { flag: '--latest', description: 'Update to latest versions (ignores semver range)' },

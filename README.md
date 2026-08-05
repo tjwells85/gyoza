@@ -37,13 +37,16 @@ Or add them manually:
 
 ## Commands
 
-| Command              | Description                                 |
-| -------------------- | ------------------------------------------- |
-| `gyoza init <cmd>`   | Project initialization and migration tools  |
-| `gyoza generate env` | Generate `.env` files from schema sources   |
-| `gyoza update`       | Interactive dependency updater              |
-| `gyoza build`        | Production build pipeline                   |
-| `gyoza help`         | Print available commands at any level       |
+| Command              | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `gyoza init <cmd>`   | Project initialization and migration tools           |
+| `gyoza generate env` | Generate `.env` files from schema sources            |
+| `gyoza add`          | `bun add` with workspace catalog support             |
+| `gyoza remove`       | `bun remove` with workspace catalog support          |
+| `gyoza update`       | Interactive updater for your project dependencies    |
+| `gyoza upgrade`      | Update gyoza itself from its git remote              |
+| `gyoza build`        | Production build pipeline                            |
+| `gyoza help`         | Print available commands at any level                |
 
 ---
 
@@ -51,7 +54,9 @@ Or add them manually:
 
 - [init commands](docs/init.md) — `init scripts`, `init eslint`, `init config`
 - [generate commands](docs/generate.md) — `generate env`
+- [add / remove](docs/catalog.md) — bun wrappers with workspace catalog support
 - [update](docs/update.md) — dependency update workflow
+- [upgrade](docs/upgrade.md) — updating gyoza itself
 - [build](docs/build.md) — production build pipeline
 - [gyoza.config.ts reference](docs/config.md) — build config, custom scripts
 - [Developing new commands](docs/development.md) — public API, architecture, contributor guide

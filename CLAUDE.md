@@ -47,10 +47,17 @@ gyoza/
 └── src/
     ├── config.ts           ← GyozaConfig, CustomScripts, loadConfig
     ├── gyoza.ts            ← Command/CommandGroup types, registry builder
+    ├── workspaces.ts       ← workspace discovery, catalog read/write helpers
+    ├── catalog.ts          ← catalog-mode arg parsing, change application
+    ├── version.ts          ← bun info version/dist-tag resolution
+    ├── prompt.ts           ← shared Y/n confirmation
     └── commands/
         ├── index.ts        ← registry root (assembles all groups)
         ├── build.ts        ← gyoza build
+        ├── add.ts          ← gyoza add
+        ├── remove.ts       ← gyoza remove
         ├── update.ts       ← gyoza update
+        ├── upgrade.ts      ← gyoza upgrade (self-update)
         ├── generate/
         │   ├── index.ts    ← generateGroup + KnownGenerateCommand type
         │   └── env.ts      ← gyoza generate env
@@ -74,10 +81,15 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 | `gyoza init eslint --dry`   | Preview migration output in `eslint-migration.md`           |
 | `gyoza init scripts`        | Upsert gyoza scripts in `package.json`, remove legacy files |
 | `gyoza init scripts --dry`  | Preview script changes in the console without applying them |
+| `gyoza add <args>`          | Passthrough to `bun add`                                    |
+| `gyoza add --catalog <ws>`  | Add to the root catalog, reference it from `<ws>`           |
+| `gyoza remove <args>`       | Passthrough to `bun remove`                                 |
+| `gyoza remove --catalog <ws>` | Remove from `<ws>`, prune the catalog entry if orphaned    |
 | `gyoza update`              | Interactive dependency updater                              |
 | `gyoza update --latest`     | Update to latest versions (ignores semver range)            |
 | `gyoza update -y`           | Skip confirmation prompt                                    |
 | `gyoza update --force`      | Also update packages pinned to an exact version              |
+| `gyoza upgrade`             | Update gyoza itself from its git remote                     |
 | `gyoza build`               | Build the project                                           |
 | `gyoza help`                | Print available commands                                    |
 
@@ -437,6 +449,29 @@ Before considering the initial implementation complete:
 - [ ] `gyoza init scripts` upserts the four target scripts, removes legacy 'env' aliases, deletes `scripts/build.ts` / `prepare.ts` / `update.ts` if present
 - [ ] `gyoza init scripts` skips a target script that already calls `gyoza` (customised)
 - [ ] `gyoza init scripts` deletes `./scripts/` folder when it becomes empty
+- [ ] `gyoza add date-fns` (no `--catalog`) behaves identically to `bun add date-fns`
+- [ ] `gyoza add --catalog server,frontend date-fns` appends `^<latest>` to the root
+      catalog and writes `"date-fns": "catalog:"` into both workspaces only
+- [ ] `gyoza add --catalog shared date-fns` on an already-catalogued package extends
+      it to `shared` without resolving or bumping the catalog version
+- [ ] `gyoza add --catalog shared date-fns@^3.0.4` on an already-catalogued package
+      prompts with the affected workspaces and defaults to no
+- [ ] `gyoza add --catalog frontend react@next` pins the prerelease exactly, no caret
+- [ ] `gyoza add --catalog server date-fns@bogustag` errors instead of silently
+      cataloguing `latest`
+- [ ] `gyoza add --catalog nope date-fns` errors listing the valid workspace names
+- [ ] `gyoza add --catalog server --only-missing date-fns` errors on the unsupported flag
+- [ ] `gyoza remove --catalog <all workspaces> date-fns` prompts to prune the orphaned
+      catalog entry; removing from a subset leaves the entry alone
+- [ ] `--dry` on either command prints the plan and modifies nothing
+- [ ] `gyoza upgrade` from a project with a stale gyoza reports `old -> new` and
+      prints the changelog entries between them
+- [ ] `gyoza upgrade` when already current prints "Already up to date"
+- [ ] `gyoza upgrade` with a `#tag` spec warns about the ref and reports a
+      downgrade as a downgrade, with no changelog section
+- [ ] `gyoza upgrade` from a project that doesn't declare gyoza exits 1 with a
+      clear message
+- [ ] `gyoza upgrade` from a source checkout exits 1 naming the directory
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings
@@ -601,6 +636,129 @@ Applied in order to every migrated file:
 
 4. **Collapse consecutive blank lines** — runs of 2+ blank lines are reduced
    to one (cleaning up gaps left by removed directive lines).
+
+---
+
+## `gyoza add` / `gyoza remove` — Catalog-Aware Bun Wrappers
+
+Bun has no CLI affordance for writing to a workspace catalog — `bun add` has no
+`--catalog` flag (see `ADD_PARAMS` in bun's `CommandLineArguments.rs`) and there
+is no `bun catalog` command. These wrappers fill that gap.
+
+Full user-facing documentation lives in [docs/catalog.md](docs/catalog.md). The
+implementation notes below are the ones worth not regressing.
+
+### Mode switch
+
+The presence of `--catalog` (or `--catalog=…`) is the only thing that separates
+the two modes. Without it, argv is handed to `bun add` / `bun remove` untouched
+via `Bun.spawn` with inherited stdio, and gyoza exits with bun's code. Catalog
+mode never invokes `bun add` at all — it writes `package.json` directly and then
+runs a single `bun install`.
+
+That is why `-a`/`--analyze` and `--only-missing` are **rejected with an error**
+in catalog mode: there is no `bun add` invocation to pass them to, and silently
+dropping them would be worse than failing.
+
+### Version resolution (`src/version.ts`)
+
+`bun info` is the resolver. Two behaviors to guard against:
+
+1. **`bun info pkg@bogustag version` silently returns `latest`** — it does not
+   error. `resolveCatalogVersion` therefore validates any dist-tag against
+   `bun info pkg dist-tags` *before* trusting the resolved version.
+2. **A missing package prints a 404 to stderr but the exit code is not a reliable
+   signal** — empty stdout is what `bunInfo` checks.
+
+`isVersionOrRange` decides verbatim-vs-resolve. It must **not** do a bare `x`
+substring test: `next` contains an `x`. Wildcards are handled by the leading-digit
+rule (`3.x`) plus exact matches on `*` and `x`.
+
+Prereleases are pinned exactly, never caret-ranged — `^5.0.0-alpha.0` would match
+a stable `5.0.0`. This also makes them pinned as far as `gyoza update` is
+concerned, since `isPinnedVersion` in `update.ts` matches `5.0.0-alpha.0`.
+
+### Catalog ordering
+
+New entries are **appended**. Never re-sort the existing `catalog` object — a sort
+would turn the first run in any real project into one enormous diff.
+
+### The extend case
+
+`gyoza add --catalog shared date-fns` where `date-fns` is already catalogued and
+no version was given must reuse the existing catalog value, skip resolution
+entirely, and leave every other workspace untouched. This is the most common
+invocation and the one that must never bump a shared version.
+
+Only an explicit differing version can change a catalog entry, and it prompts
+first (defaulting to **no**) listing every workspace that references it.
+
+### Section handling
+
+`applyChanges` deletes the package from all four dependency sections before
+writing the `catalog:` reference, so `-d` on a package already in `dependencies`
+moves it rather than duplicating it. Emptied sections are removed, as is an
+emptied `catalog` object.
+
+### Scope
+
+Named catalogs (`catalogs: { testing: {...} }`, `catalog:testing`) are **not
+supported** — the framework these commands serve uses a single top-level
+`catalog`. `gyoza install` is not wrapped.
+
+---
+
+## `gyoza upgrade` — Self-Update
+
+Updates gyoza itself and nothing else. Full documentation in
+[docs/upgrade.md](docs/upgrade.md).
+
+### Why it is needed
+
+Gyoza is installed from git with no version range, which makes it invisible to
+the normal update path in two separate ways (both verified against bun 1.3.14):
+
+1. **`bun install` will not move a git dep** whose spec is unchanged — the
+   lockfile pins a commit and there is no range to re-satisfy, so a stale entry
+   stays stale forever.
+2. **`bun outdated` returns nothing at all for git deps**, so gyoza can never
+   appear in `gyoza update`'s report regardless of how far behind it is.
+
+`bun update gyoza` *does* re-resolve to the remote's current commit. That is the
+primitive this command wraps.
+
+### Implementation notes
+
+- **This is the one command that resolves against its own install location**
+  (`import.meta.dir`) rather than `process.cwd()`. It is updating itself, not the
+  project. Everything else must keep following the `process.cwd()` rule.
+- The before/after versions are read from the gyoza package directory on either
+  side of the `bun update` call. **Do not parse `bun.lock`** — it is JSONC with no
+  public parser, and reading `package.json` twice gives the same answer reliably.
+- `bun update` runs from whichever directory declares gyoza (root first, then
+  workspaces), because that is the package.json bun will rewrite.
+
+### Refs are reported, not blocked
+
+A spec may carry a ref: `#main` (a branch — tracks and moves), `#v0.5.0` or
+`#61cd181` (a tag or commit — does not). **These are indistinguishable without
+querying the remote**, so an earlier draft that errored on any `#` was wrong — it
+would have rejected a perfectly valid branch spec. The command notes the ref, runs
+the update, and reports what actually happened.
+
+### Direction matters
+
+A pinned ref older than what is installed produces a legitimate downgrade.
+`compareVersions` detects the direction; the changelog section is printed **only
+when moving forward**, since an older release's changelog cannot describe what
+changed since a newer one.
+
+### Changelog output
+
+`changelogSince` walks the newly installed `changelog.md` from the top (entries
+are newest-first) collecting sections until it reaches the previously installed
+version. `package.json` has no `files` field, so the whole repo — changelog
+included — ships with the package.
 
 ---
 
