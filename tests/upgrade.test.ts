@@ -2,7 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { changelogSince, compareVersions, findDeclaration } from '../src/commands/upgrade.ts';
+import { changelogSince, findDeclaration } from '../src/commands/upgrade.ts';
+import { compareVersions } from '../src/version.ts';
 
 let cwd: string;
 

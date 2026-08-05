@@ -190,7 +190,8 @@ gyoza/
 │   ├── gyoza.ts                ← factory: gyoza(), Command, CommandGroup, GyozaNode
 │   ├── workspaces.ts           ← workspace discovery, catalog read/write helpers
 │   ├── catalog.ts              ← catalog-mode arg parsing, change application
-│   ├── version.ts              ← bun info version/dist-tag resolution
+│   ├── bunfig.ts               ← bunfig.toml minimumReleaseAge policy
+│   ├── version.ts              ← bun info resolution, semver compare, release-age gate
 │   ├── prompt.ts               ← shared Y/n confirmation
 │   └── commands/
 │       ├── index.ts            ← root registry (the top-level gyoza() call)

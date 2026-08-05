@@ -2,6 +2,7 @@ import { relative } from 'node:path';
 import type { PackageJson } from 'type-fest';
 import { applyChanges, hasCatalogFlag, parseCatalogArgs, passthrough, resolveTargets, runInstall } from '../catalog.ts';
 import type { CatalogArgs, CatalogChange, WorkspaceChange } from '../catalog.ts';
+import { readReleaseAgePolicy } from '../bunfig.ts';
 import type { CommandFlag } from '../gyoza.ts';
 import { confirm } from '../prompt.ts';
 import { parsePackageSpec, resolveCatalogVersion } from '../version.ts';
@@ -43,7 +44,7 @@ export const buildAddPlan = async (
   targets: Workspace[],
   catalog: Record<string, string>,
   confirmBump: BumpConfirmer,
-  resolve: VersionResolver = resolveCatalogVersion,
+  resolve: VersionResolver,
 ): Promise<AddPlan> => {
   const plan: AddPlan = { catalogChanges: [], workspaceChanges: [], unchanged: [], skipped: [] };
 
@@ -137,6 +138,12 @@ export const run = async (args: string[]): Promise<void> => {
 
     const notes: string[] = [];
 
+    // bun refuses to install anything newer than minimumReleaseAge, so the
+    // catalog must not name a version it would then reject.
+    const policy = await readReleaseAgePolicy(cwd);
+    const resolve: VersionResolver = (spec, exact) =>
+      resolveCatalogVersion(spec, exact, policy, (note) => notes.push(`  · ${note}`));
+
     const confirmBump: BumpConfirmer = async (name, from, to, consumers) => {
       const affected = consumers.length > 0 ? consumers.join(', ') : '(no workspaces yet)';
       if (parsed.dry) {
@@ -149,7 +156,7 @@ export const run = async (args: string[]): Promise<void> => {
       return confirm('Update the catalog entry?', false);
     };
 
-    const plan = await buildAddPlan(parsed, workspaces, targets, getCatalog(root), confirmBump);
+    const plan = await buildAddPlan(parsed, workspaces, targets, getCatalog(root), confirmBump, resolve);
 
     if (plan.catalogChanges.length === 0 && plan.workspaceChanges.length === 0) {
       console.log('  No changes needed.');
@@ -164,6 +171,7 @@ export const run = async (args: string[]): Promise<void> => {
 
     applyChanges(cwd, plan.catalogChanges, plan.workspaceChanges);
     printPlan(cwd, plan);
+    for (const note of notes) console.log(note);
     await runInstall(cwd);
   } catch (err) {
     console.error(`  ✗  ${err instanceof Error ? err.message : String(err)}`);

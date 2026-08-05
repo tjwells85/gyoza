@@ -258,6 +258,62 @@ describe('buildAddPlan', () => {
     expect(result.skipped).toEqual(['date-fns']);
   });
 
+  test('handles several packages in one invocation, each by its own rule', async () => {
+    makeFixture({ hono: '^4.12.29' }, {});
+
+    const { plan: result } = await plan(
+      ['--catalog', 'server,frontend', 'date-fns', 'react@next', 'zod@^3.22.4'],
+      stubResolver({ 'date-fns': '^4.4.0', 'react@next': '19.3.0-canary', 'zod@^3.22.4': '^3.22.4' }),
+    );
+
+    expect(result.catalogChanges).toEqual([
+      { kind: 'add', name: 'date-fns', to: '^4.4.0' },
+      { kind: 'add', name: 'react', to: '19.3.0-canary' },
+      { kind: 'add', name: 'zod', to: '^3.22.4' },
+    ]);
+    // Every package gets wired into every target workspace.
+    expect(result.workspaceChanges).toHaveLength(6);
+  });
+
+  test('a batch mixes new, extend, and declined packages independently', async () => {
+    makeFixture(
+      { 'date-fns': '^4.4.0', zod: '^3.22.4' },
+      {
+        server: { dependencies: { 'date-fns': 'catalog:', zod: 'catalog:' } },
+        frontend: { dependencies: { zod: 'catalog:' } },
+      },
+    );
+
+    const { plan: result } = await plan(
+      ['--catalog', 'shared', 'date-fns', 'slugify', 'zod@^4.0.0'],
+      stubResolver({ slugify: '^1.6.9', 'zod@^4.0.0': '^4.0.0' }),
+      async (name) => name !== 'zod', // decline only the zod bump
+    );
+
+    expect(result.catalogChanges).toEqual([{ kind: 'add', name: 'slugify', to: '^1.6.9' }]);
+    expect(result.unchanged).toEqual([{ name: 'date-fns', version: '^4.4.0' }]);
+    expect(result.skipped).toEqual(['zod']);
+    // The declined package is skipped entirely — no workspace wiring either.
+    expect(result.workspaceChanges.map((c) => c.name)).toEqual(['date-fns', 'slugify']);
+  });
+
+  test('applies a whole batch in one pass, appending in argument order', async () => {
+    makeFixture({ hono: '^4.12.29' }, {});
+
+    const { plan: result } = await plan(
+      ['--catalog', 'server', 'date-fns', 'slugify', 'zod'],
+      stubResolver({ 'date-fns': '^4.4.0', slugify: '^1.6.9', zod: '^4.4.3' }),
+    );
+    applyChanges(cwd, result.catalogChanges, result.workspaceChanges);
+
+    expect(Object.keys(getCatalog(readRoot()))).toEqual(['hono', 'date-fns', 'slugify', 'zod']);
+    expect(readWorkspace('server').dependencies).toEqual({
+      'date-fns': 'catalog:',
+      slugify: 'catalog:',
+      zod: 'catalog:',
+    });
+  });
+
   test('skips a workspace already wired to the catalog in the target section', async () => {
     makeFixture({ 'date-fns': '^4.4.0' }, { server: { dependencies: { 'date-fns': 'catalog:' } } });
     const { plan: result } = await plan(['--catalog', 'server,shared', 'date-fns'], stubResolver({}));

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { PackageJson } from 'type-fest';
+import { compareVersions } from '../version.ts';
 import { findDependencySection, getWorkspaces, readPackageJson, rootPackagePath } from '../workspaces.ts';
 
 export const description = 'Update gyoza itself from its git remote';
@@ -40,24 +41,6 @@ export const findDeclaration = (cwd: string): Declaration | undefined => {
   }
 
   return undefined;
-};
-
-/**
- * Compare two `x.y.z[-prerelease]` versions. Negative when `a` is older.
- * A prerelease sorts before the release sharing its version core.
- */
-export const compareVersions = (a: string, b: string): number => {
-  const core = (v: string): number[] => v.split('-')[0].split('.').map((n) => Number(n) || 0);
-  const [left, right] = [core(a), core(b)];
-
-  for (let i = 0; i < 3; i++) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) return diff < 0 ? -1 : 1;
-  }
-
-  const [leftPre, rightPre] = [a.includes('-'), b.includes('-')];
-  if (leftPre === rightPre) return 0;
-  return leftPre ? -1 : 1;
 };
 
 /**

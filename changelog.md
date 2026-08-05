@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.1] - 2026-08-05
+
+### Fixed
+
+- `gyoza add --catalog` — catalogued the absolute latest version even when `[install] minimumReleaseAge` in `bunfig.toml` made it uninstallable, so the follow-up `bun install` failed outright with `No version matching "better-auth" found for specifier "^1.6.26" (blocked by minimum-release-age: 432000 seconds)`. `bun info` reports the latest regardless of the age gate, so the version has to be chosen up front rather than discovered at install time
+  - The newest release at or below the resolved version whose publish time predates the cutoff is used instead, and the substitution is reported: `better-auth: using 1.6.25 instead of 1.6.26 — minimumReleaseAge (5 days) blocks newer releases`
+  - The project's `bunfig.toml` is read first, falling back to `~/.bunfig.toml`; packages listed in `minimumReleaseAgeExcludes` bypass the gate, as does an unset or zero age, both without any registry call
+  - Stability is preserved: a stable target never drops to a prerelease, and a dist-tag like `@next` stays within prereleases
+  - When nothing is old enough, gyoza errors and names the `minimumReleaseAgeExcludes` escape hatch instead of cataloguing a version that cannot install
+  - Explicit ranges are still stored verbatim — `better-auth@^1.6.26` writes what you asked for, and bun will reject it if nothing in that range is old enough. Omit the version to get the age-aware pick
+- `compareVersions` now implements real semver prerelease ordering (numeric identifiers below alphanumeric, `rc.4` below `rc.10`, build metadata ignored). The previous version only compared release cores plus prerelease presence, which is not precise enough to select between prereleases. It moved from `src/commands/upgrade.ts` to `src/version.ts`, where both `gyoza upgrade` and the release-age gate use it
+
+### Added
+
+- Tests for the release-age gate and semver comparison (`tests/release-age.test.ts`), and for multiple packages in a single `gyoza add` / `gyoza remove` invocation — including a batch that mixes new, extended, and declined packages
+
+---
+
 ## [0.6.0] - 2026-08-05
 
 ### Added

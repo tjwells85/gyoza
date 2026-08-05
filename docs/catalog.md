@@ -74,6 +74,48 @@ An unknown dist-tag is an error. This matters because `bun info pkg@bogustag`
 silently falls back to `latest`, so gyoza validates the tag against
 `bun info pkg dist-tags` before trusting the resolved version.
 
+### minimumReleaseAge
+
+If your `bunfig.toml` sets an age gate:
+
+```toml
+[install]
+minimumReleaseAge = 432000            # 5 days
+minimumReleaseAgeExcludes = ["typescript"]
+```
+
+...then bun will refuse to install a version published inside that window. `bun
+info` reports the absolute latest regardless, so gyoza has to pick the version
+itself — otherwise it would write a catalog entry bun then rejects:
+
+```text
+error: No version matching "better-auth" found for specifier "^1.6.26"
+       (blocked by minimum-release-age: 432000 seconds)
+```
+
+Instead, gyoza drops to the newest release that is old enough and says so:
+
+```text
+Catalog (package.json):
+  "better-auth": (none) -> "^1.6.25"
+  "date-fns": (none) -> "^4.4.0"
+  · better-auth: using 1.6.25 instead of 1.6.26 — minimumReleaseAge (5 days) blocks newer releases
+```
+
+Details:
+
+- The project's `bunfig.toml` is read first, falling back to `~/.bunfig.toml`.
+- Packages in `minimumReleaseAgeExcludes` bypass the gate entirely.
+- Stability is preserved: a stable target never drops to a prerelease, and
+  `@next` stays within prereleases.
+- If nothing is old enough, gyoza errors and points at `minimumReleaseAgeExcludes`
+  rather than cataloguing something that cannot install.
+
+**Explicit ranges are still verbatim.** `gyoza add --catalog server better-auth@^1.6.26`
+writes `^1.6.26` as asked, and bun will reject it if nothing in that range is old
+enough. That's your range, so gyoza doesn't second-guess it — omit the version to
+get the age-aware pick.
+
 ---
 
 ## `gyoza add`

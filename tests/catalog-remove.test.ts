@@ -122,6 +122,46 @@ describe('buildRemovePlan', () => {
     expect(result.catalogChanges).toEqual([]);
   });
 
+  test('handles several packages in one invocation, pruning each orphan', async () => {
+    makeFixture(
+      { hono: '^4.12.29', 'date-fns': '^4.4.0', zod: '^3.22.4' },
+      {
+        server: { dependencies: { 'date-fns': 'catalog:', zod: 'catalog:', hono: 'catalog:' } },
+        frontend: { dependencies: { 'date-fns': 'catalog:', zod: 'catalog:' } },
+      },
+    );
+
+    const result = await plan(['--catalog', 'server,frontend', 'date-fns', 'zod']);
+
+    expect(result.workspaceChanges).toHaveLength(4);
+    expect(result.catalogChanges).toEqual([
+      { kind: 'remove', name: 'date-fns', from: '^4.4.0' },
+      { kind: 'remove', name: 'zod', from: '^3.22.4' },
+    ]);
+
+    applyChanges(cwd, result.catalogChanges, result.workspaceChanges);
+
+    // hono still has a consumer, so it survives.
+    expect(getCatalog(readRoot())).toEqual({ hono: '^4.12.29' });
+    expect(readWorkspace('server').dependencies).toEqual({ hono: 'catalog:' });
+    expect(readWorkspace('frontend').dependencies).toBeUndefined();
+  });
+
+  test('prunes only the orphans in a batch', async () => {
+    makeFixture(
+      { 'date-fns': '^4.4.0', zod: '^3.22.4' },
+      {
+        server: { dependencies: { 'date-fns': 'catalog:', zod: 'catalog:' } },
+        shared: { dependencies: { zod: 'catalog:' } },
+      },
+    );
+
+    const result = await plan(['--catalog', 'server', 'date-fns', 'zod']);
+
+    // zod survives in shared; date-fns does not survive anywhere.
+    expect(result.catalogChanges).toEqual([{ kind: 'remove', name: 'date-fns', from: '^4.4.0' }]);
+  });
+
   test('a version suffix on the argument is ignored', async () => {
     makeFixture({ 'date-fns': '^4.4.0' }, { server: { dependencies: { 'date-fns': 'catalog:' } } });
 

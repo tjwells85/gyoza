@@ -49,7 +49,8 @@ gyoza/
     ├── gyoza.ts            ← Command/CommandGroup types, registry builder
     ├── workspaces.ts       ← workspace discovery, catalog read/write helpers
     ├── catalog.ts          ← catalog-mode arg parsing, change application
-    ├── version.ts          ← bun info version/dist-tag resolution
+    ├── bunfig.ts           ← bunfig.toml minimumReleaseAge policy
+    ├── version.ts          ← bun info resolution, semver compare, release-age gate
     ├── prompt.ts           ← shared Y/n confirmation
     └── commands/
         ├── index.ts        ← registry root (assembles all groups)
@@ -459,6 +460,9 @@ Before considering the initial implementation complete:
 - [ ] `gyoza add --catalog frontend react@next` pins the prerelease exactly, no caret
 - [ ] `gyoza add --catalog server date-fns@bogustag` errors instead of silently
       cataloguing `latest`
+- [ ] With `minimumReleaseAge` set in `bunfig.toml`, `gyoza add --catalog server,frontend
+      better-auth` catalogs the newest release older than the gate, notes the
+      substitution, and the follow-up `bun install` succeeds
 - [ ] `gyoza add --catalog nope date-fns` errors listing the valid workspace names
 - [ ] `gyoza add --catalog server --only-missing date-fns` errors on the unsupported flag
 - [ ] `gyoza remove --catalog <all workspaces> date-fns` prompts to prune the orphaned
@@ -673,6 +677,38 @@ dropping them would be worse than failing.
 `isVersionOrRange` decides verbatim-vs-resolve. It must **not** do a bare `x`
 substring test: `next` contains an `x`. Wildcards are handled by the leading-digit
 rule (`3.x`) plus exact matches on `*` and `x`.
+
+### minimumReleaseAge (`src/bunfig.ts`, `selectByReleaseAge`)
+
+`bun info` reports the absolute latest version, but `bun install` refuses anything
+published inside `[install] minimumReleaseAge`. Cataloguing the `bun info` answer
+therefore produces a `package.json` bun itself rejects:
+
+```
+error: No version matching "better-auth" found for specifier "^1.6.26"
+       (blocked by minimum-release-age: 432000 seconds)
+```
+
+So the version must be **chosen** here, not discovered at install time.
+`selectByReleaseAge` takes the resolved latest as an upper bound and picks the
+newest version at or below it whose `bun info <pkg> time` entry predates the
+cutoff. Rules that matter:
+
+- **Stability is matched to the bound.** A stable target never silently drops to a
+  prerelease, and a `@next` target stays within prereleases.
+- **`created` / `modified` are not versions** — they must be stripped from the
+  `time` map or `modified` sorts as the newest "version".
+- `minimumReleaseAgeExcludes` and an unset/zero age both short-circuit before any
+  registry call.
+- Nothing eligible is an error naming the excludes escape hatch, never a silent
+  fallback to the blocked version.
+
+Bun parses `.toml` natively, so `await import(path)` is the entire bunfig parser.
+The project `bunfig.toml` overrides `~/.bunfig.toml` key by key.
+
+`compareVersions` lives in `src/version.ts` and implements real semver prerelease
+ordering (numeric identifiers below alphanumeric, `rc.4` below `rc.10`). Selecting
+versions needs that precision — a naive core-only compare picks the wrong prerelease.
 
 Prereleases are pinned exactly, never caret-ranged — `^5.0.0-alpha.0` would match
 a stable `5.0.0`. This also makes them pinned as far as `gyoza update` is
