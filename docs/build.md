@@ -21,6 +21,10 @@ Runs in order:
 | **Assemble**   | Copies `frontend/dist` → `build/client` and `server/.env` → `build/.env`  |
 | **Post steps** | Any custom steps defined in `gyoza.config.ts` → `build.post`              |
 
+The build config is validated before any of this runs, so a malformed step never leaves a half-built `build/` behind.
+
+Whatever a step returns is passed to later steps as `ctx.results`, so a `post` step can act on what a `pre` step found — copying an artifact only when the `pre` step reports it actually changed, for instance. See [step results](config.md#step-results).
+
 ---
 
 ## Pre-build checks

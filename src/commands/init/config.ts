@@ -3,22 +3,30 @@ import { join } from 'node:path';
 
 const CONFIG_FILENAME = 'gyoza.config.ts';
 
-const NEW_TEMPLATE = `import type { GyozaConfig } from 'gyoza';
+const NEW_TEMPLATE = `import { defineConfig } from 'gyoza';
 
-export default {
+export default defineConfig({
   build: {
     cleanInstall: false,
-    pre: [],
-    post: [
-      {
-        name: 'Example post-build step',
-        run: async ({ projectRoot, buildDir }) => {
-          console.log(\`Build finished. Root: \${projectRoot}, Output: \${buildDir}\`);
+    pre: {
+      // Whatever a step returns is available to later steps under its key.
+      example: {
+        name: 'Example pre-build step',
+        run: async ({ projectRoot }) => {
+          return { checkedAt: Date.now(), root: projectRoot };
         },
       },
-    ],
+    },
+    post: {
+      report: {
+        name: 'Example post-build step',
+        run: async ({ buildDir, results }) => {
+          console.log(\`Build finished at \${buildDir}, pre ran at \${results.pre.example.checkedAt}\`);
+        },
+      },
+    },
   },
-} satisfies GyozaConfig;
+});
 `;
 
 const isLegacyConfig = (source: string): boolean => /export\s+const\s+buildSteps/.test(source);

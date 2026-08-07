@@ -45,7 +45,7 @@ gyoza/
 ├── cli.ts                  ← bin entry point, tree-walking dispatcher
 ├── index.ts                ← public type exports
 └── src/
-    ├── config.ts           ← GyozaConfig, CustomScripts, loadConfig
+    ├── config.ts           ← GyozaConfig, defineConfig, loadConfig, build-config preflight
     ├── gyoza.ts            ← Command/CommandGroup types, registry builder
     ├── workspaces.ts       ← workspace discovery, catalog read/write helpers
     ├── catalog.ts          ← catalog-mode arg parsing, change application
@@ -476,6 +476,14 @@ Before considering the initial implementation complete:
 - [ ] `gyoza upgrade` from a project that doesn't declare gyoza exits 1 with a
       clear message
 - [ ] `gyoza upgrade` from a source checkout exits 1 naming the directory
+- [ ] A `post` step reads `results.pre.<key>` with the exact type the `pre` step
+      returned, with no annotation anywhere in the config
+- [ ] A step returning nothing leaves no key in `results`; `0` / `false` / `''` do
+- [ ] `gyoza build` warns once (not three times) on an array-form config, and the
+      steps still run in declaration order
+- [ ] An object key that is a plain number aborts the build with exit 1 **before**
+      the build directory is cleaned
+- [ ] `build.pre` as an object with `build.post` as an array is a preflight error
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings
@@ -741,6 +749,57 @@ emptied `catalog` object.
 Named catalogs (`catalogs: { testing: {...} }`, `catalog:testing`) are **not
 supported** — the framework these commands serve uses a single top-level
 `catalog`. `gyoza install` is not wrapped.
+
+---
+
+## Build Step Results (`defineConfig`)
+
+`build.pre` / `build.post` take a keyed object; each step's return value lands in
+`ctx.results` under its key. User-facing docs in [docs/config.md](docs/config.md).
+The constraints worth not re-litigating:
+
+### Cross-phase typing works, same-phase typing does not
+
+A `post` step sees `results.pre.<key>` fully typed. A step reading its **own**
+phase's results gets `unknown`. This is forced, not an oversight.
+
+Typing a phase's own results means the type inferred *from* that phase's step map
+(`TPre`) is also referenced *inside* that same map's parameter positions. TypeScript
+resolves the cycle by collapsing **the reading step's own return type** to `unknown`
+— and that error then surfaces in whichever *later* step consumes the value, nowhere
+near the cause. Measured, not assumed: with `Partial<TPre>` in the pre context, only
+the steps that actually read `results` degraded; steps ignoring `ctx` inferred fine,
+which is exactly what makes the failure so confusing.
+
+An explicit return-type annotation on the reading step does fix it, so a "just
+annotate" variant is possible. It was rejected: the penalty for forgetting is an
+error in a different step. `TPost` was dropped entirely for the same reason — with
+same-phase typing gone it had no remaining use.
+
+Do not "fix" this by reintroducing `Partial<TPre>` into `PreStepContext` without
+re-running `tests/build-steps.types.ts`, which asserts the current shape.
+
+### Why an object, not an array of `{ key, … }`
+
+TypeScript rejects duplicate keys in an object literal, so uniqueness is a
+compile-time guarantee rather than a runtime check. Keys also stay literal without
+a `const` type parameter. The array form survives as deprecated and contributes
+nothing to `results` — it has no key to file a result under.
+
+### Preflight runs before everything
+
+`validateBuildConfig` is called before typecheck/lint/clean, so a malformed config
+never leaves a half-built `build/`. Integer-like keys (`"0"`, `"12"`) are a hard
+error: JS property ordering hoists canonical array indices ahead of string keys and
+sorts them numerically, so such a step would not run where it is written. Every
+other string key is insertion-ordered per spec.
+
+### The `defineConfig` brand
+
+`Symbol.for('gyoza.config')`, non-enumerable, so it survives a duplicated install
+and stays out of spreads and `JSON.stringify`. `mergeConfig` builds a fresh object,
+so `loadConfig` must re-brand from the **raw** imported default — checking the merged
+result would always be false.
 
 ---
 

@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.7.0] - 2026-08-07
+
+### Added
+
+- Build steps can return values, and later steps can read them. A `pre` step that builds a Rust binary can report whether anything actually changed, and the `post` step that copies it can skip the copy — previously steps had no way to communicate and `post` had to copy unconditionally
+  - `build.pre` and `build.post` accept a **keyed object** rather than an array: `pre: { rustBuild: { name: 'Build Rust CLI', run: … } }`. The key is where that step's return value lands in `ctx.results`, and TypeScript rejects duplicate keys for you. `name` is now optional and defaults to the key
+  - New `defineConfig()` export wraps the config and infers step result types. A `post` step reads `results.pre.rustBuild.changed` with the exact type the `pre` step returned, no annotations anywhere
+  - A step returning nothing contributes no key; falsy returns (`0`, `false`, `''`) are recorded normally. `run` may now be sync or async
+  - Steps run in declaration order — object property order is insertion order in JavaScript
+- Preflight validation of the build config, run before the typecheck/lint/clean phases so a malformed config costs nothing and can never leave a half-built `build/` behind. Errors on: `pre` and `post` using different forms (one array, one object), a step whose `run` is not a function, and object keys that are plain numbers — JavaScript sorts numeric keys ahead of every other key, so such a step would silently not run where it appears
+
+### Changed
+
+- `BuildContext` gained a `results` field, and `BuildStep.run` returns `unknown` rather than `Promise<void>`. Both widen what steps receive and may return, so existing step definitions keep compiling
+- `gyoza init config` scaffolds the `defineConfig` keyed form. The `buildSteps` → `build.steps` migration path is unchanged; there is no automatic array → object rewrite
+
+### Deprecated
+
+- `build.pre` / `build.post` as **arrays**. Still honoured and still run in order, but array steps have no key, so they contribute nothing to `results` and get no typing. `gyoza build` now warns. Convert each entry to a keyed object:
+
+  ```diff
+  - pre: [{ name: 'Generate types', run: async () => {} }],
+  + pre: { generateTypes: { name: 'Generate types', run: async () => {} } },
+  ```
+
+  A config still on the array form gets one warning, not three — the `defineConfig` suggestion is suppressed while a deprecation warning is already telling you to migrate
+
+  `defineConfig()` accepts the array form (and `build.steps`) so that wrapping the config and keying its steps are two independent migration steps rather than one atomic edit. [docs/config.md](config.md#migrating-to-the-keyed-form) walks through both against a running example
+
+### Notes
+
+- **Same-phase results are readable but typed `unknown`** — a `post` step sees every `pre` result fully typed, but sees earlier `post` results as `unknown` (and likewise `pre` reading `pre`). This is a TypeScript limit, not an oversight: typing a phase's own results makes the type inferred *from* that phase's step map also referenced *inside* that same map's parameter positions, and TypeScript breaks the cycle by collapsing the reading step's own return type to `unknown`. That failure then surfaces as an error in whichever later step consumes the value, nowhere near the cause. Both variants were built and measured before settling here; a uniform rule with no landmine beat same-phase typing that silently degrades. Cross-phase typing — the case the feature exists for — is unaffected
+
+---
+
 ## [0.6.1] - 2026-08-05
 
 ### Fixed

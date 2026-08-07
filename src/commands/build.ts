@@ -2,8 +2,17 @@ import { rm, mkdir, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { $ } from 'bun';
-import { loadConfig } from '../config.ts';
-import type { BuildContext, BuildStep, CheckAction, LintCheckLevel, TypeCheckLevel } from '../config.ts';
+import { loadConfig, normalizeSteps, validateBuildConfig } from '../config.ts';
+import type {
+  BuildContext,
+  BuildStep,
+  BuildSteps,
+  CheckAction,
+  LintCheckLevel,
+  NormalizedStep,
+  StepResults,
+  TypeCheckLevel,
+} from '../config.ts';
 
 const spawnCaptured = async (cmd: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
   const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', cwd });
@@ -168,34 +177,47 @@ const assembleDist = async (projectRoot: string, buildDir: string): Promise<void
   }
 };
 
-const runStep = async (step: Omit<BuildStep, 'phase'>, ctx: BuildContext): Promise<void> => {
+/**
+ * Runs a step and files its return value under its key, so later steps can read it.
+ * Array-form steps have no key and contribute nothing; a step returning nothing
+ * leaves no key behind rather than an `undefined` one.
+ */
+const runStep = async (step: NormalizedStep, phase: 'pre' | 'post', ctx: BuildContext): Promise<void> => {
   console.log(`\n🔧 ${step.name}...`);
-  await step.run(ctx);
+  const result = await step.run(ctx);
+  if (step.key !== undefined && result !== undefined) {
+    ctx.results[phase][step.key] = result;
+  }
 };
 
 const runBuild = async (_args: string[]): Promise<void> => {
   const startTime = performance.now();
   const projectRoot = process.cwd();
   const buildDir = join(projectRoot, 'build');
-  const ctx: BuildContext = { projectRoot, buildDir };
+  // One live object threaded through every step — later steps read what earlier ones wrote.
+  const results: StepResults = { pre: {}, post: {} };
+  const ctx: BuildContext = { projectRoot, buildDir, results };
 
   console.log('🚀 Starting production build...');
   console.log(`📁 Project root: ${projectRoot}`);
 
   try {
     const config = await loadConfig(projectRoot);
-    type RawBuild = { cleanInstall?: boolean; typecheck?: TypeCheckLevel; lint?: LintCheckLevel; pre?: Omit<BuildStep, 'phase'>[]; post?: Omit<BuildStep, 'phase'>[]; steps?: (Omit<BuildStep, 'phase'> & { phase?: 'pre' | 'post' })[] };
+    type RawBuild = { cleanInstall?: boolean; typecheck?: TypeCheckLevel; lint?: LintCheckLevel; pre?: BuildSteps; post?: BuildSteps; steps?: BuildStep[] };
     const build = (config.build ?? {}) as RawBuild;
 
+    // Validate before anything runs, so a bad config never leaves a half-built tree.
+    const { errors, warnings } = validateBuildConfig(config);
+    for (const warning of warnings) console.warn(`  ⚠ ${warning}`);
+    if (errors.length > 0) {
+      console.error('\n❌ Invalid build config in gyoza.config.ts:');
+      for (const error of errors) console.error(`  ✗ ${error}`);
+      process.exit(1);
+    }
+
     const legacySteps = build.steps ?? [];
-    const preSteps: Omit<BuildStep, 'phase'>[] = [
-      ...(build.pre ?? []),
-      ...legacySteps.filter(s => s.phase === 'pre'),
-    ];
-    const postSteps: Omit<BuildStep, 'phase'>[] = [
-      ...(build.post ?? []),
-      ...legacySteps.filter(s => s.phase !== 'pre'),
-    ];
+    const preSteps = normalizeSteps(build.pre, legacySteps.filter(s => s.phase === 'pre'));
+    const postSteps = normalizeSteps(build.post, legacySteps.filter(s => s.phase !== 'pre'));
 
     const [typecheckOk, lintOk] = await Promise.all([
       runTypecheck(projectRoot, build.typecheck ?? 'off'),
@@ -211,13 +233,13 @@ const runBuild = async (_args: string[]): Promise<void> => {
 
     await cleanBuildDir(buildDir);
 
-    for (const step of preSteps) await runStep(step, ctx);
+    for (const step of preSteps) await runStep(step, 'pre', ctx);
 
     await buildFrontend(projectRoot);
     await buildServer(projectRoot, buildDir);
     await assembleDist(projectRoot, buildDir);
 
-    for (const step of postSteps) await runStep(step, ctx);
+    for (const step of postSteps) await runStep(step, 'post', ctx);
 
     const duration = ((performance.now() - startTime) / 1000).toFixed(2);
     console.log(`\n✅ Build completed successfully in ${duration}s`);
