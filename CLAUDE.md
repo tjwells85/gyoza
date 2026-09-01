@@ -450,6 +450,9 @@ Before considering the initial implementation complete:
 - [ ] a package `bun outdated` marks with `*` (age-gated) whose installable
       version already matches what is installed does not appear in the report;
       catalogued packages never appear in the per-workspace tables
+- [ ] a pinned package with a newer version is shown in the report tagged
+      `(pinned, not updated)` and is excluded from the "N updates" count; when
+      every outstanding update is pinned, `gyoza update` says so and exits
 - [ ] `gyoza init eslint --dry` writes `eslint-migration.md` with four sections; sections with no `.mts` file say "not found"
 - [ ] `gyoza init eslint` renames `.mts` → `.mjs`, strips `@ts-*` directives, injects JSDoc before `defineConfig(`
 - [ ] `gyoza init eslint` skips a directory when `.mjs` already exists and prints a warning

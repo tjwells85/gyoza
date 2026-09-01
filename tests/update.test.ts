@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { parseOutdatedTable, planCatalogUpdates } from '../src/commands/update.ts';
+import { annotateOutdated, parseOutdatedTable, planCatalogUpdates } from '../src/commands/update.ts';
 import type { CatalogTargetResolver } from '../src/commands/update.ts';
 import { rangeOperator, resolveInRangeVersion } from '../src/version.ts';
 import type { VersionsFetcher } from '../src/version.ts';
@@ -142,6 +142,34 @@ describe('parseOutdatedTable', () => {
     expect(parsed[0]).toEqual({ name: 'zod (dev)', current: '4.4.3', update: '4.4.3', latest: '4.4.3' });
     // date-fns is genuinely behind — the marker is stripped but the row stands.
     expect(parsed[1]).toEqual({ name: 'date-fns', current: '4.4.0', update: '4.4.0', latest: '4.5.1' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// annotateOutdated — pinned rows are shown but flagged and not counted
+// ---------------------------------------------------------------------------
+
+describe('annotateOutdated', () => {
+  const outdated = [
+    { name: 'typescript (dev)', current: '6.0.3', update: '6.0.3', latest: '7.0.2' },
+    { name: 'vite', current: '6.0.1', update: '6.3.5', latest: '6.3.5' },
+  ];
+
+  test('flags a pinned package, matching against its bare name', () => {
+    const rows = annotateOutdated(outdated, true, new Set(['typescript']));
+    expect(rows).toEqual([
+      { name: 'typescript (dev)', current: '6.0.3', newVersion: '7.0.2', pinned: true },
+      { name: 'vite', current: '6.0.1', newVersion: '6.3.5', pinned: false },
+    ]);
+  });
+
+  test('uses the update column when not --latest', () => {
+    const rows = annotateOutdated(outdated, false, new Set());
+    expect(rows.map(r => r.newVersion)).toEqual(['6.0.3', '6.3.5']);
+  });
+
+  test('an empty pin set (e.g. --force) flags nothing', () => {
+    expect(annotateOutdated(outdated, true, new Set()).every(r => !r.pinned)).toBe(true);
   });
 });
 

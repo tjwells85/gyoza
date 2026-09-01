@@ -225,23 +225,48 @@ const getWorkspaceOutdated = async (cwd: string): Promise<OutdatedPackage[]> => 
   return parseOutdatedTable(text);
 };
 
-const printWorkspaceOutdated = (label: string, updatable: OutdatedPackage[], useLatest: boolean): void => {
-  if (updatable.length === 0) return;
+export type OutdatedRow = { name: string; current: string; newVersion: string; pinned: boolean };
+
+/**
+ * Pair each outdated package with the version it would move to and whether it is
+ * pinned. A pinned package is still listed — it has a newer version and that is
+ * worth seeing — but `restorePinnedEntries` reverts any bump, so it does not
+ * count as an update (unless `--force` emptied `pinnedNames`).
+ */
+export const annotateOutdated = (
+  updatable: OutdatedPackage[],
+  useLatest: boolean,
+  pinnedNames: Set<string>,
+): OutdatedRow[] =>
+  updatable.map(pkg => ({
+    name: pkg.name,
+    current: pkg.current,
+    newVersion: useLatest ? pkg.latest : pkg.update,
+    pinned: pinnedNames.has(bareName(pkg.name)),
+  }));
+
+const printWorkspaceOutdated = (label: string, rows: OutdatedRow[]): void => {
+  if (rows.length === 0) return;
 
   console.log(`\nWorkspace: ${label}`);
 
-  const nameWidth = Math.max(10, ...updatable.map(p => p.name.length));
-  const currentWidth = Math.max(9, ...updatable.map(p => p.current.length));
-  const newWidth = Math.max(11, ...updatable.map(p => (useLatest ? p.latest : p.update).length));
+  const display = rows.map(r => ({
+    name: r.name,
+    current: r.current,
+    newVersion: r.pinned ? `${r.newVersion}  (pinned, not updated)` : r.newVersion,
+  }));
+
+  const nameWidth = Math.max(10, ...display.map(r => r.name.length));
+  const currentWidth = Math.max(9, ...display.map(r => r.current.length));
+  const newWidth = Math.max(11, ...display.map(r => r.newVersion.length));
   const totalWidth = nameWidth + currentWidth + newWidth + 6;
 
   console.log('─'.repeat(totalWidth));
   console.log(`${'Package'.padEnd(nameWidth)}  ${'Current'.padEnd(currentWidth)}  New Version`);
   console.log('─'.repeat(totalWidth));
 
-  for (const pkg of updatable) {
-    const newVersion = useLatest ? pkg.latest : pkg.update;
-    console.log(`${pkg.name.padEnd(nameWidth)}  ${pkg.current.padEnd(currentWidth)}  ${newVersion}`);
+  for (const row of display) {
+    console.log(`${row.name.padEnd(nameWidth)}  ${row.current.padEnd(currentWidth)}  ${row.newVersion}`);
   }
 };
 
@@ -270,13 +295,20 @@ const printPinnedNotice = (pinnedEntries: PinnedEntry[], latestByName: Map<strin
   console.log('');
 };
 
+type OutdatedReport = {
+  /** Packages that will actually move — what the confirmation prompt counts. */
+  actionable: number;
+  /** Packages with a newer version that stays put because they are pinned. */
+  pinnedPending: number;
+};
+
 const showOutdatedReport = async (
   useLatest: boolean,
   pinnedEntries: PinnedEntry[],
   force: boolean,
   suppressUpToDate: boolean,
   catalogNames: Set<string>,
-): Promise<number> => {
+): Promise<OutdatedReport> => {
   const workspaces = [
     { label: 'root', cwd: process.cwd() },
     { label: 'frontend', cwd: join(process.cwd(), 'frontend') },
@@ -298,6 +330,8 @@ const showOutdatedReport = async (
     }),
   );
 
+  const pinnedNames = new Set(pinnedEntries.map(e => e.name));
+
   if (!force && pinnedEntries.length > 0) {
     const latestByName = new Map<string, string>();
     for (const { all } of results) {
@@ -309,19 +343,31 @@ const showOutdatedReport = async (
     printPinnedNotice(pinnedEntries, latestByName);
   }
 
-  const total = results.reduce((sum, r) => sum + r.updatable.length, 0);
+  const annotated = results.map(r => ({ label: r.label, rows: annotateOutdated(r.updatable, useLatest, pinnedNames) }));
+  const anyRows = annotated.some(r => r.rows.length > 0);
 
-  if (total === 0) {
-    if (!suppressUpToDate) console.log('All packages are up to date.\n');
-    return 0;
+  // Pinned packages have a newer version but won't move — don't count them
+  // toward the prompt, or "N updates" overstates what will actually change.
+  let actionable = 0;
+  let pinnedPending = 0;
+  for (const { rows } of annotated) {
+    for (const row of rows) {
+      if (row.pinned) pinnedPending++;
+      else actionable++;
+    }
   }
 
-  for (const { label, updatable } of results) {
-    printWorkspaceOutdated(label, updatable, useLatest);
+  if (!anyRows) {
+    if (!suppressUpToDate) console.log('All packages are up to date.\n');
+    return { actionable: 0, pinnedPending: 0 };
+  }
+
+  for (const { label, rows } of annotated) {
+    printWorkspaceOutdated(label, rows);
   }
 
   console.log('');
-  return total;
+  return { actionable, pinnedPending };
 };
 
 const confirmUpdate = async (count: number): Promise<boolean> => {
@@ -415,7 +461,7 @@ const runUpdate = async (args: string[]): Promise<void> => {
     makeCatalogResolver(policy, catalogNotes),
   );
 
-  const bunUpdateCount = await showOutdatedReport(
+  const report = await showOutdatedReport(
     latest,
     pinnedEntries,
     force,
@@ -425,8 +471,16 @@ const runUpdate = async (args: string[]): Promise<void> => {
   printCatalogUpdates(catalogUpdates);
   for (const note of catalogNotes) console.log(note);
 
-  const updateCount = bunUpdateCount + catalogUpdates.length;
-  if (updateCount === 0) process.exit(0);
+  const updateCount = report.actionable + catalogUpdates.length;
+  if (updateCount === 0) {
+    if (report.pinnedPending > 0) {
+      const n = report.pinnedPending;
+      console.log(
+        `\nNothing to update — ${n} pinned package${n === 1 ? '' : 's'} ${n === 1 ? 'has' : 'have'} a newer version. Pass --force to include ${n === 1 ? 'it' : 'them'}.`,
+      );
+    }
+    process.exit(0);
+  }
 
   const confirmed = yes || (await confirmUpdate(updateCount));
   if (!confirmed) {

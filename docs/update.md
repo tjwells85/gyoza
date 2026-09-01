@@ -80,6 +80,21 @@ Package     Pinned   Latest
 typescript  6.0.3    7.0.2
 ```
 
+In the per-workspace tables, a pinned package that has a newer version is shown
+but tagged, and it is **not** counted toward "N updates available":
+
+```text
+Workspace: root
+────────────────────────────────────────────────────────────
+Package           Current    New Version
+────────────────────────────────────────────────────────────
+typescript (dev)  6.0.3      7.0.2  (pinned, not updated)
+```
+
+If every outstanding update is pinned, gyoza prints
+`Nothing to update — N pinned package(s) have a newer version. Pass --force to
+include them.` and exits.
+
 After `bun update` runs (and after catalog references are restored), gyoza
 writes the pinned versions back to wherever they came from, undoing any bump
 `bun update` made to them. Pass `--force` to skip this protection entirely

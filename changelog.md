@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1] - 2026-09-01
+
+### Changed
+
+- A pinned package with a newer version available used to appear in the outdated report as an ordinary update and count toward "N updates available", even though `restorePinnedEntries` immediately reverts any bump `bun update` makes to it. Those rows are now tagged `(pinned, not updated)` and left out of the count — the version is still shown, but it is clear nothing will change without `--force`. This is separate from the existing "Pinned versions (protected …)" notice, which still lists them
+- When every outstanding update is pinned, `gyoza update` now prints `Nothing to update — N pinned package(s) have a newer version. Pass --force to include them.` instead of exiting with no explanation
+
 ## [0.8.0] - 2026-09-01
 
 ### Fixed
