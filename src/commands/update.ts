@@ -1,7 +1,10 @@
 import { $ } from 'bun';
 import { join } from 'node:path';
 import type { PackageJson } from 'type-fest';
+import { readReleaseAgePolicy } from '../bunfig.ts';
+import type { ReleaseAgePolicy } from '../bunfig.ts';
 import type { CommandFlag } from '../gyoza.ts';
+import { resolveCatalogVersion, resolveInRangeVersion } from '../version.ts';
 
 // Phrased to contrast with `gyoza upgrade`, which updates gyoza itself.
 export const description = 'Interactive updater for your project dependencies';
@@ -99,7 +102,77 @@ const restorePinnedEntries = async (entries: PinnedEntry[]): Promise<void> => {
   }
 };
 
-type OutdatedPackage = {
+export type CatalogUpdate = { name: string; from: string; to: string };
+
+/**
+ * Resolves a root `catalog` entry to the version it should move to, or undefined
+ * when it should stay put. Injectable so tests need no registry.
+ */
+export type CatalogTargetResolver = (name: string, currentRange: string, useLatest: boolean) => Promise<string | undefined>;
+
+/**
+ * Work out which root `catalog` entries move, and where to.
+ *
+ * Bun has no affordance for updating a catalog — `bun update` cannot see or
+ * rewrite the root `catalog` object — so the versions are re-resolved here the
+ * same way a standard dependency would move: `--latest` goes to the absolute
+ * latest, a plain run goes to the newest release still inside the current range.
+ * Exact-pinned entries are protected exactly as they are elsewhere in this
+ * command; `--force` opts them back in.
+ */
+export const planCatalogUpdates = async (
+  catalog: Record<string, string>,
+  useLatest: boolean,
+  force: boolean,
+  resolve: CatalogTargetResolver,
+): Promise<CatalogUpdate[]> => {
+  const updates: CatalogUpdate[] = [];
+
+  for (const [name, current] of Object.entries(catalog)) {
+    if (!force && isPinnedVersion(current)) continue;
+
+    let target: string | undefined;
+    try {
+      target = await resolve(name, current, useLatest);
+    } catch (err) {
+      console.warn(`  ⚠ Could not resolve ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    if (target && target !== current) updates.push({ name, from: current, to: target });
+  }
+
+  return updates;
+};
+
+const makeCatalogResolver = (policy: ReleaseAgePolicy, notes: string[]): CatalogTargetResolver => {
+  const note = (msg: string): void => {
+    notes.push(`  · ${msg}`);
+  };
+  return (name, currentRange, useLatest) =>
+    useLatest
+      ? resolveCatalogVersion({ name }, false, policy, note)
+      : resolveInRangeVersion(name, currentRange, policy, note);
+};
+
+const printCatalogUpdates = (updates: CatalogUpdate[]): void => {
+  if (updates.length === 0) return;
+
+  console.log('\nCatalog (package.json)');
+  const nameWidth = Math.max(10, ...updates.map(u => u.name.length));
+  const fromWidth = Math.max(7, ...updates.map(u => u.from.length));
+  const totalWidth = nameWidth + fromWidth + 12;
+
+  console.log('─'.repeat(totalWidth));
+  console.log(`${'Package'.padEnd(nameWidth)}  ${'Current'.padEnd(fromWidth)}  New Version`);
+  console.log('─'.repeat(totalWidth));
+
+  for (const u of updates) {
+    console.log(`${u.name.padEnd(nameWidth)}  ${u.from.padEnd(fromWidth)}  ${u.to}`);
+  }
+};
+
+export type OutdatedPackage = {
   name: string;
   current: string;
   update: string;
@@ -109,7 +182,19 @@ type OutdatedPackage = {
 // eslint-disable-next-line no-control-regex
 const stripAnsi = (str: string): string => str.replace(/\x1b\[[0-9;]*m/g, '');
 
-const parseOutdatedTable = (text: string): OutdatedPackage[] => {
+/**
+ * `bun outdated` appends ` *` to an Update/Latest version when a newer release
+ * exists but is held back by `minimumReleaseAge` — the shown version is the
+ * newest one actually installable. For gyoza's purposes that version *is* the
+ * target, so the marker is stripped; otherwise `"4.4.3 *" !== "4.4.3"` makes an
+ * up-to-date package look outdated.
+ */
+const cleanVersionCell = (cell: string): string => cell.replace(/\s*\*\s*$/, '').trim();
+
+/** `"@types/bun (dev)"` → `"@types/bun"`, for matching against catalog keys. */
+const bareName = (name: string): string => name.replace(/\s*\((?:dev|peer|optional)\)\s*$/, '').trim();
+
+export const parseOutdatedTable = (text: string): OutdatedPackage[] => {
   const packages: OutdatedPackage[] = [];
   let foundHeader = false;
 
@@ -123,7 +208,12 @@ const parseOutdatedTable = (text: string): OutdatedPackage[] => {
     }
     if (cells[0]?.startsWith('-')) continue;
     if (cells.length >= 4) {
-      packages.push({ name: cells[0], current: cells[1], update: cells[2], latest: cells[3] });
+      packages.push({
+        name: cells[0],
+        current: cleanVersionCell(cells[1]),
+        update: cleanVersionCell(cells[2]),
+        latest: cleanVersionCell(cells[3]),
+      });
     }
   }
 
@@ -184,6 +274,8 @@ const showOutdatedReport = async (
   useLatest: boolean,
   pinnedEntries: PinnedEntry[],
   force: boolean,
+  suppressUpToDate: boolean,
+  catalogNames: Set<string>,
 ): Promise<number> => {
   const workspaces = [
     { label: 'root', cwd: process.cwd() },
@@ -197,7 +289,11 @@ const showOutdatedReport = async (
   const results = await Promise.all(
     workspaces.map(async w => {
       const all = await getWorkspaceOutdated(w.cwd);
-      const updatable = all.filter(p => (useLatest ? p.latest : p.update) !== p.current);
+      // Catalogued packages are owned by planCatalogUpdates — keep them out of
+      // the workspace table so a catalog bump isn't reported (and counted) twice.
+      const updatable = all.filter(
+        p => !catalogNames.has(bareName(p.name)) && (useLatest ? p.latest : p.update) !== p.current,
+      );
       return { label: w.label, all, updatable };
     }),
   );
@@ -206,7 +302,8 @@ const showOutdatedReport = async (
     const latestByName = new Map<string, string>();
     for (const { all } of results) {
       for (const pkg of all) {
-        if (!latestByName.has(pkg.name)) latestByName.set(pkg.name, pkg.latest);
+        const key = bareName(pkg.name);
+        if (!latestByName.has(key)) latestByName.set(key, pkg.latest);
       }
     }
     printPinnedNotice(pinnedEntries, latestByName);
@@ -215,7 +312,7 @@ const showOutdatedReport = async (
   const total = results.reduce((sum, r) => sum + r.updatable.length, 0);
 
   if (total === 0) {
-    console.log('All packages are up to date.\n');
+    if (!suppressUpToDate) console.log('All packages are up to date.\n');
     return 0;
   }
 
@@ -309,7 +406,26 @@ const runUpdate = async (args: string[]): Promise<void> => {
   const catalogMap = await getCatalogPackages();
   const pinnedEntries = force ? [] : await collectAllPinnedEntries();
 
-  const updateCount = await showOutdatedReport(latest, pinnedEntries, force);
+  const catalogNotes: string[] = [];
+  const policy = await readReleaseAgePolicy(process.cwd());
+  const catalogUpdates = await planCatalogUpdates(
+    Object.fromEntries(catalogMap),
+    latest,
+    force,
+    makeCatalogResolver(policy, catalogNotes),
+  );
+
+  const bunUpdateCount = await showOutdatedReport(
+    latest,
+    pinnedEntries,
+    force,
+    catalogUpdates.length > 0,
+    new Set(catalogMap.keys()),
+  );
+  printCatalogUpdates(catalogUpdates);
+  for (const note of catalogNotes) console.log(note);
+
+  const updateCount = bunUpdateCount + catalogUpdates.length;
   if (updateCount === 0) process.exit(0);
 
   const confirmed = yes || (await confirmUpdate(updateCount));
@@ -322,6 +438,7 @@ const runUpdate = async (args: string[]): Promise<void> => {
   await runUpdates(latest);
   await catalogifyWorkspaceDependencies(frontendPackagePath, catalogMap);
   await catalogifyWorkspaceDependencies(serverPackagePath, catalogMap);
+  for (const { name, to } of catalogUpdates) catalogMap.set(name, to);
   await updateRootCatalog(catalogMap);
   await restorePinnedEntries(pinnedEntries);
   await runInstall();

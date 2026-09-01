@@ -39,6 +39,14 @@ frontend
 2 packages to update. Proceed? [Y/n]
 ```
 
+Only packages with a genuine update are listed. Two things are filtered out:
+
+- **Catalogued packages** — they appear in the separate catalog section below, not
+  the per-workspace tables.
+- **Age-gated packages** — `bun outdated` marks a version with `*` when a newer
+  release exists but is blocked by `minimumReleaseAge`; the marked version is the
+  newest one installable, so if it equals what you have there is nothing to do.
+
 If no packages are outdated, the command exits immediately with no changes.
 
 ---
@@ -81,4 +89,43 @@ and let pinned packages update like any other.
 
 ## Catalog behavior
 
-After updating, gyoza restores `catalog:` references in `frontend/package.json` and `server/package.json` (Bun workspace catalogs), then writes the updated resolved versions back to the `catalog` field in the root `package.json`. This keeps the catalog in sync with the actual installed versions.
+Bun has no affordance for updating a workspace catalog — `bun update` cannot see
+or rewrite the root `catalog` object, and there is no `bun catalog` command (the
+same gap [`gyoza add`](catalog.md) fills). Left to bun, a catalogued dependency
+like `"better-auth": "^1.6.25"` stays at that string forever, no matter how many
+times you run `gyoza update --latest`.
+
+So gyoza re-resolves each `catalog` entry itself, the same way the equivalent
+standard dependency would move:
+
+| Run | Each catalog entry moves to |
+| --- | --- |
+| `gyoza update` | newest published release still inside its current range (`^1.6.25` → `^1.7.2`, never crossing the major) |
+| `gyoza update --latest` | absolute latest, caret-ranged (`^1.6.25` → `^2.3.0`) |
+
+The catalog entries appear in their own section of the report and count toward
+the confirmation prompt:
+
+```text
+Catalog (package.json)
+────────────────────────────────────
+Package      Current   New Version
+────────────────────────────────────
+better-auth  ^1.6.25   ^1.7.2
+```
+
+Details:
+
+- **Exact-pinned catalog entries** (`"typescript": "6.0.3"`, and prerelease pins
+  like `"react": "19.0.0-rc.1"` written by `gyoza add … @next`) are protected
+  just like pinned workspace deps — skipped unless you pass `--force`.
+- The **release-age gate** in `bunfig.toml` is honored: gyoza will not catalog a
+  version `bun install` would then reject, dropping to the newest one old enough
+  and saying so — identical to `gyoza add`.
+- Existing catalog **order is preserved** — only the changed values are rewritten.
+- If the registry can't be reached for one entry, gyoza warns and leaves that
+  entry alone rather than aborting the whole update.
+
+Separately, gyoza restores `catalog:` references in `frontend/package.json` and
+`server/package.json` after `bun update` runs, in case a workspace was still
+carrying a literal version from before it was catalogued.

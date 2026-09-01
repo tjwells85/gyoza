@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0] - 2026-09-01
+
+### Fixed
+
+- `gyoza update` and `gyoza update --latest` never moved workspace **catalog** entries. Bun has no affordance for updating a catalog — `bun update` cannot see or rewrite the root `catalog` object — so an entry like `"better-auth": "^1.6.25"` stayed at that exact string no matter how many times `--latest` was run. The old catalog-sync step only propagated a version when a workspace `package.json` still held a *literal* version for a catalogued package, which is only true mid-migration; in a settled project it was a no-op that wrote the unchanged catalog straight back
+  - gyoza now re-resolves each `catalog` entry itself, mirroring how the equivalent standard dependency moves: a plain `gyoza update` goes to the newest published release still inside the entry's range (`^1.6.25` → `^1.7.2`, never crossing the major), and `gyoza update --latest` goes to the absolute latest (`^1.6.25` → `^2.3.0`)
+  - Catalog changes get their own section in the outdated report and count toward the confirmation prompt
+  - Exact-pinned catalog entries (including prerelease pins from `gyoza add …@next`) are protected exactly like pinned workspace deps — skipped unless `--force`
+  - The `bunfig.toml` `minimumReleaseAge` gate is honored the same way it is for `gyoza add`: gyoza will not catalog a version `bun install` would reject, dropping to the newest one old enough and noting the substitution
+  - Existing catalog order is preserved; a registry failure on one entry warns and leaves that entry alone rather than aborting the update
+- The outdated report listed packages that were already up to date. `bun outdated` appends a `*` marker to a version when a newer release is held back by `minimumReleaseAge`, so the cell `4.4.3 *` compared unequal to the installed `4.4.3` and every age-gated package showed as an update with an identical "current" and "new" column. The marker is now stripped when the table is parsed, so only genuine updates are listed and counted
+- Catalogued packages are no longer shown in the per-workspace tables — they are resolved and reported in the new catalog section instead, so a catalog bump is not listed (or counted toward the prompt) twice
+- The "pinned versions" notice now finds the latest version for a pinned `devDependency` — it was keying on `"pkg (dev)"` while looking it up as `"pkg"`
+
+### Added
+
+- `getPublishedVersions` and `resolveInRangeVersion` in `src/version.ts` — the newest published, non-prerelease version of a package still satisfying a given range, age-gate aware. `rangeOperator` extracts a range's leading `^` / `~`
+- `planCatalogUpdates` in `src/commands/update.ts` (exported, with an injectable resolver) and `tests/update-catalog.test.ts` covering it and `resolveInRangeVersion`
+
 ## [0.7.0] - 2026-08-07
 
 ### Added

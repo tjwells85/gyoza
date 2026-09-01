@@ -119,6 +119,20 @@ export const getPublishTimes: PublishTimesFetcher = async (name) => {
   }
 };
 
+/** Injectable so tests can exercise range selection without hitting the registry. */
+export type VersionsFetcher = (name: string) => Promise<string[]>;
+
+/** Every published version of `name`, in the order npm returns them (oldest first). */
+export const getPublishedVersions: VersionsFetcher = async (name) => {
+  const raw = await bunInfo(name, 'versions');
+  try {
+    const parsed = JSON.parse(raw) as string[] | string;
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    throw new Error(`Could not read published versions for "${name}".`);
+  }
+};
+
 /**
  * The newest version at or below `upperBound` that is old enough to install.
  *
@@ -198,4 +212,46 @@ export const resolveCatalogVersion = async (
 
   if (exact || isPrerelease(version)) return version;
   return `^${version}`;
+};
+
+/** The leading range operator of a catalog value, e.g. '^' from '^1.6.25'. '' when the value is an exact pin. */
+export const rangeOperator = (range: string): string => {
+  const match = /^(\^|~|>=|<=|>|<)/.exec(range.trim());
+  return match ? match[1] : '';
+};
+
+/**
+ * Resolve a catalog entry to the newest published, non-prerelease version that
+ * still satisfies its current range, keeping the range's leading operator.
+ * Returns undefined when nothing newer is in range.
+ *
+ * This is the `gyoza update` (no `--latest`) counterpart to `resolveCatalogVersion`:
+ * a standard dependency moves to the newest in-range release, and so does the
+ * catalog entry. The release-age gate is honored exactly as it is for `gyoza add`.
+ */
+export const resolveInRangeVersion = async (
+  name: string,
+  range: string,
+  policy: ReleaseAgePolicy = noReleaseAgePolicy,
+  onNote?: (note: string) => void,
+  fetchVersions: VersionsFetcher = getPublishedVersions,
+): Promise<string | undefined> => {
+  const op = rangeOperator(range);
+
+  const satisfying = (await fetchVersions(name))
+    .filter((version) => !isPrerelease(version))
+    .filter((version) => Bun.semver.satisfies(version, range))
+    .sort((a, b) => Bun.semver.order(a, b));
+
+  const newest = satisfying.at(-1);
+  if (newest === undefined) return undefined;
+
+  const picked = await selectByReleaseAge(name, newest, policy);
+  if (picked !== newest) {
+    onNote?.(
+      `${name}: using ${picked} instead of ${newest} — minimumReleaseAge (${describeAge(policy.minimumReleaseAge)}) blocks newer releases`,
+    );
+  }
+
+  return `${op}${picked}`;
 };

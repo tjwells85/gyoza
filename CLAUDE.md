@@ -442,6 +442,14 @@ Before considering the initial implementation complete:
 - [ ] `gyoza update` shows the outdated report and prompts for confirmation
 - [ ] `gyoza update -y` skips the prompt
 - [ ] `gyoza update --latest` uses latest versions
+- [ ] `gyoza update` moves a `catalog` entry to the newest in-range release;
+      `gyoza update --latest` moves it to the absolute latest, both shown in a
+      "Catalog (package.json)" report section that counts toward the prompt
+- [ ] an exact-pinned `catalog` entry is left alone unless `--force`; a
+      `minimumReleaseAge` gate still applies to the catalog pick
+- [ ] a package `bun outdated` marks with `*` (age-gated) whose installable
+      version already matches what is installed does not appear in the report;
+      catalogued packages never appear in the per-workspace tables
 - [ ] `gyoza init eslint --dry` writes `eslint-migration.md` with four sections; sections with no `.mts` file say "not found"
 - [ ] `gyoza init eslint` renames `.mts` → `.mjs`, strips `@ts-*` directives, injects JSDoc before `defineConfig(`
 - [ ] `gyoza init eslint` skips a directory when `.mjs` already exists and prints a warning
