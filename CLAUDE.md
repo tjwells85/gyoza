@@ -55,6 +55,7 @@ gyoza/
     └── commands/
         ├── index.ts        ← registry root (assembles all groups)
         ├── build.ts        ← gyoza build
+        ├── deploy.ts       ← gyoza deploy
         ├── add.ts          ← gyoza add
         ├── remove.ts       ← gyoza remove
         ├── update.ts       ← gyoza update
@@ -92,6 +93,10 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 | `gyoza update --force`      | Also update packages pinned to an exact version              |
 | `gyoza upgrade`             | Update gyoza itself from its git remote                     |
 | `gyoza build`               | Build the project                                           |
+| `gyoza deploy`              | Pull, install, migrate, build, restart the systemd service  |
+| `gyoza deploy --dry`        | Print the deploy plan without changing anything             |
+| `gyoza deploy -y`           | Deploy without confirmation prompts                         |
+| `gyoza deploy --force`      | Build and restart even when the pull brought nothing new    |
 | `gyoza help`                | Print available commands                                    |
 
 ### How it is consumed
@@ -495,9 +500,31 @@ Before considering the initial implementation complete:
 - [ ] An object key that is a plain number aborts the build with exit 1 **before**
       the build directory is cleaned
 - [ ] `build.pre` as an object with `build.post` as an array is a preflight error
+- [ ] `gyoza deploy --dry` prints the plan (branch, pull cmd, incoming commits,
+      install/migrate/build/restart) and mutates nothing
+- [ ] `gyoza deploy` on an up-to-date branch prints "Already up to date" and exits
+      0; `--force` still builds and restarts
+- [ ] a diverged server tree makes `git pull --ff-only` abort with a clear message
+      and no further steps run
+- [ ] `bun install` runs only when `bun.lock` is in the pulled diff
+- [ ] `deploy.migrate` as a script name runs `bun run <name>`; a missing script
+      aborts with exit 1
+- [ ] `deploy.migrate` as a callback receives `{ projectRoot, changedFiles,
+      fromRef, toRef }`
+- [ ] `deploy.migrate` unset + changed `.sql` files prompts `[y/N]`; declining
+      exits 1
+- [ ] `deploy.service` unset prompts to finish without a restart; unset + no TTY +
+      no `--yes` exits 1 naming the field
+- [ ] `deploy.service` as `'app'` and `['app','worker.service']` both produce one
+      `sudo systemctl restart` call with `.service` suffixes normalized
+- [ ] a failing `gyoza build` aborts the deploy before the service is restarted
+- [ ] a malformed `deploy` config (numeric `service`, empty `migrate`) aborts with
+      exit 1 before anything is pulled
+- [ ] an unknown flag to `gyoza deploy` exits 1 listing the supported flags
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings
+- [ ] `bun test` passes
 
 ---
 
@@ -868,11 +895,66 @@ included — ships with the package.
 
 ---
 
+## `gyoza deploy` — Server Deployment
+
+Orchestrates a full deployment on the server. Full documentation in
+[docs/deploy.md](docs/deploy.md). Config lives under `deploy` in `gyoza.config.ts`
+([docs/config.md](docs/config.md#deploy-config)).
+
+Sequence: preflight → `git pull --ff-only origin <branch>` → `bun install` (only if
+`bun.lock` moved in the pulled diff) → `deploy.migrate` → `runBuild([])` in-process
+→ `sudo systemctl restart <units>`.
+
+### Firsts
+
+This is the **first command that runs on the server** and the **first that shells
+out to `git`** — nothing else in gyoza does either. It still follows the
+`process.cwd()` rule (unlike `gyoza upgrade`). git/bun/systemctl are invoked with
+`Bun.spawn`, mirroring `update.ts`/`upgrade.ts`; there is no git library.
+
+### Why `--ff-only`
+
+Plain `git pull` creates a merge commit whenever the server checkout has a commit
+the remote lacks (in-place hotfix, half-finished prior deploy, CRLF churn).
+`--ff-only` turns that into a loud failure instead of a silent merge. A dirty
+working tree aborts in preflight for the same reason — no `--force` override in v1.
+
+### Migrate runs every deploy
+
+When `deploy.migrate` is set it runs on every deploy; the migration tool is
+trusted to no-op when nothing is pending. The `.sql`-in-diff scan is **only** used
+to decide whether to warn when `deploy.migrate` is *absent* — it is not a gate on
+running migrations. `deploy.migrate` as a string is verified against
+`package.json` `scripts` before running (`bun run <name>`); as a function it gets
+`{ projectRoot, changedFiles, fromRef, toRef }`.
+
+### Service restart
+
+`sudo systemctl restart` — units are system units. `string | string[]`; an array
+is one `systemctl` call. `normalizeServices` appends `.service` when the name has
+no dot. The deploy user needs a NOPASSWD sudoers entry for the restart.
+
+### Non-interactive aborts, never skips
+
+`deploy.service` or `deploy.migrate` (with `.sql` changes) missing + no TTY + no
+`--yes` → exit 1 naming the field. `confirm()` in `src/prompt.ts` has no TTY guard
+and returns `false` on closed stdin, so `deploy.ts` checks `process.stdin.isTTY`
+explicitly before each prompt to give a clear message rather than a bare abort.
+`confirm()` itself is unchanged — other commands depend on its current behaviour.
+
+### Failure leaves the old service running
+
+A failed `runBuild` `process.exit(1)`s before the restart step, so the previous
+build keeps serving. The pull is **not** reverted; re-running `gyoza deploy` after
+fixing the cause is a no-op on the pull and proceeds from there.
+
+---
+
 ## Notes
 
 - All path resolution uses `process.cwd()`, so gyoza always operates on the
   project it is run from, not its own install location.
 - The package is `"private": true`. If it ever goes public, scope it as
   `@timw/gyoza` to avoid npm squatting on the unscoped name.
-- `build.ts` and `migrate.ts` from the template are **not** in scope for this
-  initial implementation.
+- The template's `migrate.ts` is not ported wholesale — `gyoza deploy` instead
+  delegates migrations to a project-supplied `deploy.migrate` script or callback.

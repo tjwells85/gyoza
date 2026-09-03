@@ -105,9 +105,38 @@ export interface CustomScripts {
   generate?: Record<string, () => void | Promise<void>>;
 }
 
+/** Context handed to a `deploy.migrate` callback. */
+export interface DeployMigrateContext {
+  /** process.cwd() of the project being deployed. */
+  projectRoot: string;
+  /** Paths from `git diff --name-only <before>..<after>` for the pull just applied. */
+  changedFiles: string[];
+  /** HEAD sha before the pull. */
+  fromRef: string;
+  /** HEAD sha after the pull. */
+  toRef: string;
+}
+
+/**
+ * The migration step run by `gyoza deploy`. Either a `package.json` script name
+ * (run as `bun run <name>`) or a callback for custom logic.
+ */
+export type DeployMigrate = string | ((ctx: DeployMigrateContext) => unknown);
+
+export interface DeployConfig {
+  /** DB migration step: a `package.json` script name or a callback. Default: none — `gyoza deploy` prompts. */
+  migrate?: DeployMigrate;
+  /**
+   * systemd unit(s) for `gyoza deploy` to restart via `sudo systemctl restart`.
+   * `'app'` or `'app.service'`; an array restarts every unit in one call. Default: none — `gyoza deploy` prompts.
+   */
+  service?: string | string[];
+}
+
 export interface GyozaConfig {
   build?: BuildConfig;
   custom?: CustomScripts;
+  deploy?: DeployConfig;
 }
 
 export const defaultConfig: GyozaConfig = {
@@ -147,6 +176,7 @@ export interface DefineConfigInput<TPre> {
     steps?: BuildStep[];
   };
   custom?: CustomScripts;
+  deploy?: DeployConfig;
 }
 
 /**
@@ -285,6 +315,50 @@ export const validateBuildConfig = (config: GyozaConfig): ConfigDiagnostics => {
 };
 
 /**
+ * Checks the `deploy` block before `gyoza deploy` touches anything, so a malformed
+ * config fails before the working tree is pulled. Same `{ errors, warnings }` shape
+ * as `validateBuildConfig`.
+ */
+export const validateDeployConfig = (config: GyozaConfig): ConfigDiagnostics => {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const deploy = config.deploy;
+
+  if (deploy === undefined) return { errors, warnings };
+
+  const { migrate, service } = deploy;
+
+  if (migrate !== undefined && typeof migrate !== 'string' && typeof migrate !== 'function') {
+    errors.push(
+      'deploy.migrate must be a package.json script name (string) or a callback function. ' +
+        `Got ${typeof migrate}.`,
+    );
+  }
+  if (typeof migrate === 'string' && migrate.trim() === '') {
+    errors.push('deploy.migrate is an empty string. Give it a package.json script name, or remove it.');
+  }
+
+  if (service !== undefined && typeof service !== 'string' && !Array.isArray(service)) {
+    errors.push(`deploy.service must be a unit name (string) or an array of unit names. Got ${typeof service}.`);
+  }
+  if (typeof service === 'string' && service.trim() === '') {
+    errors.push('deploy.service is an empty string. Give it a systemd unit name, or remove it.');
+  }
+  if (Array.isArray(service)) {
+    if (service.length === 0) {
+      errors.push('deploy.service is an empty array. List at least one systemd unit name, or remove it.');
+    }
+    service.forEach((unit, i) => {
+      if (typeof unit !== 'string' || unit.trim() === '') {
+        errors.push(`deploy.service[${i}] must be a non-empty unit name.`);
+      }
+    });
+  }
+
+  return { errors, warnings };
+};
+
+/**
  * Flattens either form into an ordered list. Object insertion order is preserved;
  * array-form and legacy steps keep their existing position after the keyed ones.
  */
@@ -328,6 +402,7 @@ const mergeConfig = (base: GyozaConfig, override: Partial<GyozaConfig>): GyozaCo
       steps:        o?.steps        ?? b?.steps,
     },
     custom: override.custom ?? base.custom,
+    deploy: override.deploy ?? base.deploy,
   };
 };
 

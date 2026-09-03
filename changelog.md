@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.9.0] - 2026-09-03
+
+### Added
+
+- `gyoza deploy` — orchestrates a full server-side deployment as one command:
+  `git pull --ff-only origin <current-branch>`, then `bun install` **only** when
+  `bun.lock` moved in the pulled diff, then the configured migration step, then
+  `gyoza build` in-process, then `sudo systemctl restart` of the configured
+  unit(s). It is the first gyoza command intended to run on the server and the
+  first to shell out to `git`; it still resolves everything from `process.cwd()`
+  - `--dry` fetches `origin` and prints the whole plan (incoming commits, whether
+    `bun install` / migrations / a restart would run) without touching anything
+  - `-y` / `--yes` skips every confirmation prompt; `--force` runs the build and
+    restart even when the pull brought no new commits
+  - Preflight validates the config, refuses a detached HEAD or a dirty working
+    tree, and aborts a fast-forward that isn't one — the server tree having
+    diverged is a loud failure, never a silent merge commit
+  - A failed `gyoza build` stops the deploy before the restart, so the previous
+    build keeps serving. A failed deploy is not rolled back; re-running it is a
+    no-op on the pull and continues from there
+- `deploy` block in `gyoza.config.ts` with two optional fields:
+  - `migrate` — a `package.json` script name (run as `bun run <name>`, verified
+    to exist first) or a callback invoked with
+    `{ projectRoot, changedFiles, fromRef, toRef }`. Runs on every deploy when
+    set; the `.sql`-in-diff scan only decides whether to warn when it is unset
+  - `service` — a systemd unit name or an array of them; `.service` is appended
+    when the name has no dot, and an array is restarted in a single `systemctl`
+    call
+- `validateDeployConfig` in `src/config.ts`, and the `DeployConfig` /
+  `DeployMigrate` / `DeployMigrateContext` types are exported from `gyoza`
+
+### Notes
+
+- When `deploy.migrate` or `deploy.service` is missing and stdin is not a TTY,
+  `gyoza deploy` aborts naming the field rather than silently skipping the step —
+  an unattended run never quietly forgoes a migration or a restart
+- `sudo systemctl restart` is used, so an unattended deploy needs a NOPASSWD
+  sudoers entry scoped to the unit
+
 ## [0.8.1] - 2026-09-01
 
 ### Changed

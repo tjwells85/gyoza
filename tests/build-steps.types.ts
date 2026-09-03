@@ -68,6 +68,20 @@ defineConfig({
 defineConfig({ build: { cleanInstall: true, typecheck: 'fail' } });
 defineConfig({ custom: { init: { seed: async () => {} } } });
 
+// The deploy block: migrate as a script name or a callback, service as a string or array.
+defineConfig({ deploy: { migrate: 'db:migrate', service: 'app' } });
+defineConfig({
+  deploy: {
+    service: ['app', 'worker.service'],
+    migrate: (ctx) => {
+      expectType<Equal<typeof ctx.projectRoot, string>>(true);
+      expectType<Equal<typeof ctx.changedFiles, string[]>>(true);
+      expectType<Equal<typeof ctx.fromRef, string>>(true);
+      expectType<Equal<typeof ctx.toRef, string>>(true);
+    },
+  },
+});
+
 // The deprecated array form must stay assignable, so a config can be wrapped in
 // defineConfig as its own migration step before its steps are keyed.
 defineConfig({

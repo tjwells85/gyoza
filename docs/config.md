@@ -331,6 +331,50 @@ import type { KnownInitCommand, KnownGenerateCommand } from 'gyoza';
 
 ---
 
+## `deploy` config
+
+Drives `gyoza deploy`. Both fields are optional; when one is missing, `gyoza deploy`
+prompts (and aborts in a non-interactive shell). See [gyoza deploy](deploy.md) for
+the full command.
+
+```ts
+import { defineConfig } from 'gyoza';
+
+export default defineConfig({
+  deploy: {
+    // a package.json script name…
+    migrate: 'db:migrate',
+
+    // …or a callback for custom logic
+    // migrate: async ({ projectRoot, changedFiles, fromRef, toRef }) => {
+    //   await runMyMigrator(projectRoot);
+    // },
+
+    service: 'app',                 // or 'app.service', or ['app', 'worker']
+  },
+});
+```
+
+### Fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `migrate` | `string` or `(ctx: DeployMigrateContext) => unknown` | none — prompts | DB migration step. A string is run as `bun run <name>`; a callback is awaited. Runs on every deploy |
+| `service` | `string` or `string[]` | none — prompts | systemd unit(s) restarted with `sudo systemctl restart`. Names without a `.` get `.service` appended; an array restarts all in one call |
+
+### `DeployMigrateContext`
+
+```ts
+interface DeployMigrateContext {
+  projectRoot: string;    // process.cwd()
+  changedFiles: string[]; // paths from the pulled diff (git diff --name-only)
+  fromRef: string;        // HEAD sha before the pull
+  toRef: string;          // HEAD sha after the pull
+}
+```
+
+---
+
 ## Full example
 
 ```ts
@@ -360,6 +404,10 @@ export default defineConfig({
         },
       },
     },
+  },
+  deploy: {
+    migrate: 'db:migrate',
+    service: ['app', 'worker'],
   },
   custom: {
     init: {

@@ -252,4 +252,4 @@ const runBuild = async (_args: string[]): Promise<void> => {
 };
 
 export const description = 'Build the monorepo for production';
-export { runBuild as run };
+export { runBuild, runBuild as run };
