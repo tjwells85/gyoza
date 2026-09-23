@@ -312,6 +312,33 @@ starting with `@`) and `comments` (all other lines). Supported directives:
 | `?:` or `string \| undefined` | `# KEY=` (commented out, optional) |
 | Nothing                 | `KEY=` (empty)    |
 
+#### Build tool detection (Vite vs Rsbuild)
+
+Vite and Rsbuild both support the `interface ImportMetaEnv` / `interface ImportMeta` shape in
+`frontend/src/env.d.ts`, so `parseFrontendEnvTs` needs no branching — it's the same source shape
+either way. `detectFrontendBuildTool` checks `frontend/` for `vite.config.*` vs `rsbuild.config.*`
+(by presence only, first match wins if somehow both exist).
+
+`correctFrontendEnvPrefix` finds fields in `interface ImportMetaEnv` using the *other* tool's known
+prefix (`VITE_` <-> `PUBLIC_`) and computes the swap — this is the only case treated as an
+unambiguous rename, since a field with neither prefix has nothing to swap to. In
+`generateFrontendEnv`, when there are rename candidates and stdin is a TTY, `confirm()` from
+`src/prompt.ts` asks once to apply them; on yes, `frontend/src/env.d.ts` is rewritten and the old
+key's existing `.env` value (if any) is carried forward under the new key before rendering, so a
+rename never drops a value already set. Non-interactive (no TTY) or a "no" answer leaves field names
+untouched — this command has no `-y` flag, and skipping is always safe here since it's cosmetic
+naming, not a functional gate.
+
+`warnPrefixMismatches` still runs afterward for whatever's left — a field the user declined to
+rename, or one that never had a clean swap in the first place — but skips fields that were rename
+*candidates* even when declined, so the same mismatch doesn't get both the specific rename prompt
+output and a second generic warning.
+
+No config file found → prefix checking (both the rename prompt and `warnPrefixMismatches`) is
+skipped entirely. A project-level custom Rsbuild prefix (`loadEnv({ prefixes })`) is not read from
+`rsbuild.config.*`, so it can produce a false warning/prompt — accepted as a known gap rather than
+parsing the Rsbuild config.
+
 #### Imports for generate.ts
 
 ```ts

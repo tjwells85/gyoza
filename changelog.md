@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.10.0] - 2026-09-23
+
+### Added
+
+- `gyoza generate env` detects the frontend build tool (Vite vs Rsbuild) by
+  checking `frontend/` for `vite.config.*` vs `rsbuild.config.*`, and checks
+  every `frontend/src/env.d.ts` field name against the tool's expected prefix
+  — `VITE_` for Vite, `PUBLIC_` for Rsbuild's default
+  - Both tools support the same `interface ImportMetaEnv` / `interface
+    ImportMeta` shape, so parsing and rendering needed no changes — only the
+    prefix check is new
+  - A field using the *other* tool's prefix is an unambiguous swap: in a TTY,
+    gyoza lists the rename(s) and prompts to apply them, rewriting
+    `env.d.ts` and carrying the field's existing `.env` value forward under
+    its new key on confirmation. Declining, or running non-interactively,
+    leaves it untouched — there's no `-y` flag for this yet
+  - A field matching neither prefix is only warned about — there's nothing
+    unambiguous to rename it to
+  - `detectFrontendBuildTool`, `correctFrontendEnvPrefix`, and
+    `warnPrefixMismatches` are exported from `src/commands/generate/env.ts`
+    for the same reason the rest of that file's helpers are: testability
+  - A custom Rsbuild prefix set via `loadEnv({ prefixes })` in
+    `rsbuild.config.*` is not read, so it can produce a false warning/prompt;
+    neither config file present skips the check entirely
+
 ## [0.9.0] - 2026-09-03
 
 ### Added

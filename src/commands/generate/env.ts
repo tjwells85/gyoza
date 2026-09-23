@@ -2,12 +2,41 @@ import { copyFileSync, existsSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { confirm } from '../../prompt.ts';
 
 const PROJECT_ROOT = process.cwd();
 const SERVER_ENV_TS = join(PROJECT_ROOT, 'server/env.ts');
 const SERVER_ENV = join(PROJECT_ROOT, 'server/.env');
-const FRONTEND_ENV_TS = join(PROJECT_ROOT, 'frontend/src/env.d.ts');
-const FRONTEND_ENV = join(PROJECT_ROOT, 'frontend/.env');
+const FRONTEND_DIR = join(PROJECT_ROOT, 'frontend');
+const FRONTEND_ENV_TS = join(FRONTEND_DIR, 'src/env.d.ts');
+const FRONTEND_ENV = join(FRONTEND_DIR, '.env');
+
+type FrontendBuildTool = 'vite' | 'rsbuild';
+
+const BUILD_TOOL_EXPECTED_PREFIX: Record<FrontendBuildTool, string> = {
+  vite: 'VITE_',
+  rsbuild: 'PUBLIC_',
+};
+
+const CONFIG_FILE_EXTENSIONS = ['ts', 'js', 'mts', 'mjs', 'cts', 'cjs'];
+
+/** Detects the frontend build tool by config file presence. Both tools support the same `interface ImportMetaEnv` shape, so only the expected var prefix differs. */
+export const detectFrontendBuildTool = (frontendDir: string): FrontendBuildTool | undefined => {
+  const hasConfig = (base: string): boolean => CONFIG_FILE_EXTENSIONS.some((ext) => existsSync(join(frontendDir, `${base}.${ext}`)));
+  if (hasConfig('vite.config')) return 'vite';
+  if (hasConfig('rsbuild.config')) return 'rsbuild';
+  return undefined;
+};
+
+/** Rsbuild's expected prefix is only its configured default; a custom `loadEnv({ prefixes })` isn't read here. */
+export const warnPrefixMismatches = (fields: EnvField[], tool: FrontendBuildTool): void => {
+  const expected = BUILD_TOOL_EXPECTED_PREFIX[tool];
+  for (const field of fields) {
+    if (field.kind === 'field' && !field.name.startsWith(expected)) {
+      console.warn(`  ⚠ ${field.name} does not start with "${expected}" (expected for ${tool})`);
+    }
+  }
+};
 
 type EnvField =
   | {
@@ -291,29 +320,27 @@ const writeEnvSafe = (envPath: string, backupPath: string, content: string, fiel
   }
 };
 
+/** Locates the `interface ImportMetaEnv { ... }` block shared by all frontend env.d.ts helpers. */
+const findImportMetaEnvBounds = (lines: string[]): { start: number; end: number } | undefined => {
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes('interface ImportMetaEnv')) {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() === '}') return { start: i, end: j };
+      }
+      return undefined;
+    }
+  }
+  return undefined;
+};
+
 export const parseFrontendEnvTs = (src: string): EnvField[] => {
   const lines = src.split('\n');
   const fields: EnvField[] = [];
 
-  let interfaceStart = -1;
-  let interfaceEnd = -1;
+  const bounds = findImportMetaEnvBounds(lines);
+  if (!bounds) return fields;
 
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('interface ImportMetaEnv')) {
-      interfaceStart = i;
-      for (let j = i + 1; j < lines.length; j++) {
-        if (lines[j].trim() === '}') {
-          interfaceEnd = j;
-          break;
-        }
-      }
-      break;
-    }
-  }
-
-  if (interfaceStart === -1 || interfaceEnd === -1) return fields;
-
-  const interfaceLines = lines.slice(interfaceStart + 1, interfaceEnd);
+  const interfaceLines = lines.slice(bounds.start + 1, bounds.end);
   const commentBuffer: string[] = [];
   const directiveBuffer: string[] = [];
   let i = 0;
@@ -385,25 +412,10 @@ export const parseFrontendEnvTs = (src: string): EnvField[] => {
 
 export const correctFrontendEnvReadonly = (src: string): string => {
   const lines = src.split('\n');
-  let interfaceStart = -1;
-  let interfaceEnd = -1;
+  const bounds = findImportMetaEnvBounds(lines);
+  if (!bounds) return src;
 
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('interface ImportMetaEnv')) {
-      interfaceStart = i;
-      for (let j = i + 1; j < lines.length; j++) {
-        if (lines[j].trim() === '}') {
-          interfaceEnd = j;
-          break;
-        }
-      }
-      break;
-    }
-  }
-
-  if (interfaceStart === -1 || interfaceEnd === -1) return src;
-
-  for (let i = interfaceStart + 1; i < interfaceEnd; i++) {
+  for (let i = bounds.start + 1; i < bounds.end; i++) {
     const trimmed = lines[i].trim();
     if (trimmed.match(/^(\w+)(\?)?:\s*(.+);$/) && !trimmed.startsWith('readonly')) {
       const indent = lines[i].match(/^(\s*)/)?.[1] || '';
@@ -412,6 +424,38 @@ export const correctFrontendEnvReadonly = (src: string): string => {
   }
 
   return lines.join('\n');
+};
+
+/**
+ * Renames fields in `interface ImportMetaEnv` whose name uses the *other* known tool's
+ * prefix to the given tool's expected one (`VITE_` <-> `PUBLIC_`). Only that clean swap is
+ * attempted — a field with neither prefix is left alone, since there's nothing to swap it to.
+ */
+export const correctFrontendEnvPrefix = (src: string, tool: FrontendBuildTool): { corrected: string; renamed: [string, string][] } => {
+  const lines = src.split('\n');
+  const renamed: [string, string][] = [];
+
+  const bounds = findImportMetaEnvBounds(lines);
+  if (!bounds) return { corrected: src, renamed };
+
+  const expectedPrefix = BUILD_TOOL_EXPECTED_PREFIX[tool];
+  const otherPrefix = BUILD_TOOL_EXPECTED_PREFIX[tool === 'vite' ? 'rsbuild' : 'vite'];
+
+  for (let i = bounds.start + 1; i < bounds.end; i++) {
+    const trimmed = lines[i].trim();
+    const fieldMatch = trimmed.match(/^(readonly\s+)?(\w+)(\??):\s*(.+);$/);
+    if (!fieldMatch) continue;
+
+    const [, readonlyPart = '', name, optionalMark, rest] = fieldMatch;
+    if (!name.startsWith(otherPrefix)) continue;
+
+    const newName = expectedPrefix + name.slice(otherPrefix.length);
+    const indent = lines[i].match(/^(\s*)/)?.[1] ?? '';
+    lines[i] = `${indent}${readonlyPart}${newName}${optionalMark}: ${rest};`;
+    renamed.push([name, newName]);
+  }
+
+  return { corrected: lines.join('\n'), renamed };
 };
 
 const generateFrontendEnv = async (): Promise<void> => {
@@ -423,15 +467,54 @@ const generateFrontendEnv = async (): Promise<void> => {
   }
 
   const src = readFileSync(FRONTEND_ENV_TS, 'utf-8');
-  const corrected = correctFrontendEnvReadonly(src);
+  let workingSrc = correctFrontendEnvReadonly(src);
 
-  if (corrected !== src) {
-    writeFileSync(FRONTEND_ENV_TS, corrected);
+  if (workingSrc !== src) {
+    writeFileSync(FRONTEND_ENV_TS, workingSrc);
     console.log('  ✓ Auto-corrected readonly in frontend/src/env.d.ts');
   }
 
-  const fields = parseFrontendEnvTs(corrected);
+  const buildTool = detectFrontendBuildTool(FRONTEND_DIR);
+  const renameCandidates = buildTool ? correctFrontendEnvPrefix(workingSrc, buildTool).renamed : [];
+  let renamedFields: [string, string][] = [];
+
+  if (buildTool && renameCandidates.length > 0) {
+    console.log(`  ⚠ ${renameCandidates.length} field(s) in frontend/src/env.d.ts use the wrong prefix for ${buildTool}:`);
+    for (const [oldName, newName] of renameCandidates) {
+      console.log(`    - ${oldName} -> ${newName}`);
+    }
+
+    if (process.stdin.isTTY) {
+      const shouldRename = await confirm(`Rename to match ${buildTool}'s "${BUILD_TOOL_EXPECTED_PREFIX[buildTool]}" prefix?`);
+
+      if (shouldRename) {
+        workingSrc = correctFrontendEnvPrefix(workingSrc, buildTool).corrected;
+        renamedFields = renameCandidates;
+        writeFileSync(FRONTEND_ENV_TS, workingSrc);
+        console.log('  ✓ Renamed fields in frontend/src/env.d.ts');
+      }
+    } else {
+      console.log('  (non-interactive — leaving as-is)');
+    }
+  }
+
+  const fields = parseFrontendEnvTs(workingSrc);
+
+  if (buildTool) {
+    const skipNames = new Set(renameCandidates.map(([oldName]) => oldName));
+    warnPrefixMismatches(
+      fields.filter((f) => !(f.kind === 'field' && skipNames.has(f.name))),
+      buildTool,
+    );
+  }
+
   const existing = parseEnvFile(FRONTEND_ENV);
+  for (const [oldName, newName] of renamedFields) {
+    if (existing[oldName] !== undefined && existing[newName] === undefined) {
+      existing[newName] = existing[oldName];
+    }
+  }
+
   const output = renderEnv(fields, existing);
   writeEnvSafe(FRONTEND_ENV, `${FRONTEND_ENV}.backup`, output, fields);
 

@@ -1,4 +1,7 @@
 import { describe, test, expect } from 'bun:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseEnvTs,
   renderEnv,
@@ -7,6 +10,9 @@ import {
   parseFrontendEnvTs,
   correctFrontendEnvReadonly,
   generateValue,
+  detectFrontendBuildTool,
+  warnPrefixMismatches,
+  correctFrontendEnvPrefix,
 } from '../src/commands/generate/env.ts';
 
 // Sample server env.ts schema, deliberately pushing every documented directive,
@@ -416,6 +422,96 @@ describe('parseFrontendEnvTs', () => {
     const sectionIdx = fields.findIndex((f) => f.kind === 'section');
     expect(sectionIdx).toBeGreaterThan(-1);
     expect(fields[sectionIdx + 1]?.kind).toBe('field');
+  });
+});
+
+describe('detectFrontendBuildTool', () => {
+  test('detects vite.config.ts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gyoza-buildtool-'));
+    writeFileSync(join(dir, 'vite.config.ts'), '');
+    expect(detectFrontendBuildTool(dir)).toBe('vite');
+  });
+
+  test('detects rsbuild.config.mjs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gyoza-buildtool-'));
+    writeFileSync(join(dir, 'rsbuild.config.mjs'), '');
+    expect(detectFrontendBuildTool(dir)).toBe('rsbuild');
+  });
+
+  test('returns undefined when neither config is present', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gyoza-buildtool-'));
+    expect(detectFrontendBuildTool(dir)).toBeUndefined();
+  });
+});
+
+describe('warnPrefixMismatches', () => {
+  const fields = parseFrontendEnvTs(correctFrontendEnvReadonly(SAMPLE_FRONTEND_ENV_TS));
+
+  test('VITE_-prefixed fields warn nothing under vite', () => {
+    const warnings: string[] = [];
+    const spy = (...args: unknown[]) => warnings.push(args.join(' '));
+    const original = console.warn;
+    console.warn = spy;
+    warnPrefixMismatches(fields, 'vite');
+    console.warn = original;
+    expect(warnings).toEqual([]);
+  });
+
+  test('VITE_-prefixed fields all warn under rsbuild (expects PUBLIC_)', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.join(' '));
+    warnPrefixMismatches(fields, 'rsbuild');
+    console.warn = original;
+    const fieldCount = fields.filter((f) => f.kind === 'field').length;
+    expect(warnings).toHaveLength(fieldCount);
+    expect(warnings[0]).toContain('expected for rsbuild');
+  });
+});
+
+describe('correctFrontendEnvPrefix', () => {
+  test('swaps VITE_ -> PUBLIC_ when targeting rsbuild', () => {
+    const { corrected, renamed } = correctFrontendEnvPrefix(SAMPLE_FRONTEND_ENV_TS, 'rsbuild');
+    const fieldNames = parseFrontendEnvTs(correctFrontendEnvReadonly(corrected))
+      .filter((f) => f.kind === 'field')
+      .map((f) => f.name);
+
+    expect(fieldNames).toEqual(['PUBLIC_API_URL', 'PUBLIC_SESSION_ID', 'PUBLIC_APP_NAME', 'PUBLIC_DEBUG', 'PUBLIC_FEATURE_FLAG', 'PUBLIC_VERSION']);
+    expect(renamed).toEqual([
+      ['VITE_API_URL', 'PUBLIC_API_URL'],
+      ['VITE_SESSION_ID', 'PUBLIC_SESSION_ID'],
+      ['VITE_APP_NAME', 'PUBLIC_APP_NAME'],
+      ['VITE_DEBUG', 'PUBLIC_DEBUG'],
+      ['VITE_FEATURE_FLAG', 'PUBLIC_FEATURE_FLAG'],
+      ['VITE_VERSION', 'PUBLIC_VERSION'],
+    ]);
+  });
+
+  test('is a no-op when fields already match the target prefix', () => {
+    const { corrected, renamed } = correctFrontendEnvPrefix(SAMPLE_FRONTEND_ENV_TS, 'vite');
+    expect(renamed).toEqual([]);
+    expect(corrected).toBe(SAMPLE_FRONTEND_ENV_TS);
+  });
+
+  test('leaves a field with neither known prefix untouched', () => {
+    const src = `
+interface ImportMetaEnv {
+  readonly APP_NAME: string;
+  readonly VITE_API_URL: string;
+}
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+`;
+    const { renamed } = correctFrontendEnvPrefix(src, 'rsbuild');
+    expect(renamed).toEqual([['VITE_API_URL', 'PUBLIC_API_URL']]);
+  });
+
+  test('preserves readonly/optional markers and the type annotation across a rename', () => {
+    const { corrected } = correctFrontendEnvPrefix(SAMPLE_FRONTEND_ENV_TS, 'rsbuild');
+    expect(corrected).toContain('readonly PUBLIC_API_URL: string;');
+    expect(corrected).toContain('PUBLIC_APP_NAME?: string;');
+    expect(corrected).toContain('PUBLIC_DEBUG: string | undefined;');
   });
 });
 

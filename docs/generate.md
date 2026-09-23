@@ -68,6 +68,25 @@ export const env = z.object({
 | `?:` or `string \| undefined` | `# KEY=` (commented out) |
 | Nothing                       | `KEY=` (empty)           |
 
+### Build tool detection (Vite vs Rsbuild)
+
+Both Vite and Rsbuild support the same `interface ImportMetaEnv` / `interface ImportMeta` shape in
+`frontend/src/env.d.ts`, so parsing and rendering are identical either way. Gyoza detects which tool
+is in use by checking `frontend/` for a `vite.config.*` or `rsbuild.config.*` file, then checks
+every field name against the tool's expected prefix — `VITE_` for Vite, `PUBLIC_` for Rsbuild's
+default.
+
+- A field using the *other* tool's prefix (e.g. `VITE_API_URL` when Rsbuild is detected) is an
+  unambiguous swap. In an interactive terminal, gyoza lists the rename(s) and prompts
+  `Rename to match rsbuild's "PUBLIC_" prefix? [Y/n]`. On confirmation it rewrites
+  `frontend/src/env.d.ts` in place and carries forward the field's existing `.env` value under its
+  new key. Declining, or running non-interactively (no TTY), leaves the field name untouched.
+- A field matching neither prefix is only warned about — there's no unambiguous rename to offer.
+- If a project overrides Rsbuild's default prefix via `loadEnv({ prefixes: [...] })`, gyoza still
+  checks against `PUBLIC_` and may warn/prompt incorrectly — it doesn't parse `rsbuild.config.*` for
+  a custom prefix.
+- If neither config file is found, prefix checking is skipped entirely.
+
 ### Safety behavior
 
 - Before overwriting any existing `.env`, gyoza writes `.env.backup` alongside it.
