@@ -10,10 +10,11 @@ import {
   parseFrontendEnvTs,
   correctFrontendEnvReadonly,
   generateValue,
-  detectFrontendBuildTool,
+  resolveFrontendBuildTool,
   warnPrefixMismatches,
   correctFrontendEnvPrefix,
 } from '../src/commands/generate/env.ts';
+import { validateFrontendConfig } from '../src/config.ts';
 
 // Sample server env.ts schema, deliberately pushing every documented directive,
 // rendering rule, and edge case: multi-line Prettier-wrapped chains, section
@@ -425,22 +426,79 @@ describe('parseFrontendEnvTs', () => {
   });
 });
 
-describe('detectFrontendBuildTool', () => {
-  test('detects vite.config.ts', () => {
+describe('resolveFrontendBuildTool', () => {
+  const frontendDir = (files: Record<string, string>): string => {
     const dir = mkdtempSync(join(tmpdir(), 'gyoza-buildtool-'));
-    writeFileSync(join(dir, 'vite.config.ts'), '');
-    expect(detectFrontendBuildTool(dir)).toBe('vite');
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+    return dir;
+  };
+  const pkg = (devDependencies: Record<string, string>): string => JSON.stringify({ devDependencies });
+
+  test('detects vite.config.ts', () => {
+    const dir = frontendDir({ 'vite.config.ts': '' });
+    expect(resolveFrontendBuildTool('auto', dir)).toEqual({ kind: 'resolved', tool: 'vite', source: 'detected' });
   });
 
   test('detects rsbuild.config.mjs', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gyoza-buildtool-'));
-    writeFileSync(join(dir, 'rsbuild.config.mjs'), '');
-    expect(detectFrontendBuildTool(dir)).toBe('rsbuild');
+    const dir = frontendDir({ 'rsbuild.config.mjs': '' });
+    expect(resolveFrontendBuildTool('auto', dir)).toEqual({ kind: 'resolved', tool: 'rsbuild', source: 'detected' });
   });
 
-  test('returns undefined when neither config is present', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gyoza-buildtool-'));
-    expect(detectFrontendBuildTool(dir)).toBeUndefined();
+  test('none when neither config is present', () => {
+    expect(resolveFrontendBuildTool('auto', frontendDir({}))).toEqual({ kind: 'none' });
+  });
+
+  test('an explicit setting beats the config files present', () => {
+    const dir = frontendDir({ 'vite.config.ts': '' });
+    expect(resolveFrontendBuildTool('rsbuild', dir)).toEqual({ kind: 'resolved', tool: 'rsbuild', source: 'config' });
+  });
+
+  test('an explicit setting applies even with no config file', () => {
+    expect(resolveFrontendBuildTool('vite', frontendDir({}))).toEqual({ kind: 'resolved', tool: 'vite', source: 'config' });
+  });
+
+  test('both configs (stub vite.config.ts for shadcn) + only @rsbuild/core declared resolves to rsbuild', () => {
+    const dir = frontendDir({
+      'vite.config.ts': '// @ts-nocheck',
+      'rsbuild.config.ts': '',
+      'package.json': pkg({ '@rsbuild/core': '^1.0.0' }),
+    });
+    expect(resolveFrontendBuildTool('auto', dir)).toEqual({ kind: 'resolved', tool: 'rsbuild', source: 'dependency' });
+  });
+
+  test('both configs + both packages declared is ambiguous', () => {
+    const dir = frontendDir({
+      'vite.config.ts': '',
+      'rsbuild.config.ts': '',
+      'package.json': pkg({ vite: '^6.0.0', '@rsbuild/core': '^1.0.0' }),
+    });
+    expect(resolveFrontendBuildTool('auto', dir)).toEqual({ kind: 'ambiguous' });
+  });
+
+  test('both configs + no package.json is ambiguous', () => {
+    const dir = frontendDir({ 'vite.config.ts': '', 'rsbuild.config.ts': '' });
+    expect(resolveFrontendBuildTool('auto', dir)).toEqual({ kind: 'ambiguous' });
+  });
+
+  test('both configs + unparseable package.json is ambiguous, not a crash', () => {
+    const dir = frontendDir({ 'vite.config.ts': '', 'rsbuild.config.ts': '', 'package.json': '{ nope' });
+    expect(resolveFrontendBuildTool('auto', dir)).toEqual({ kind: 'ambiguous' });
+  });
+});
+
+describe('validateFrontendConfig', () => {
+  test('accepts an absent block and every valid setting', () => {
+    expect(validateFrontendConfig({}).errors).toEqual([]);
+    for (const buildTool of ['auto', 'vite', 'rsbuild'] as const) {
+      expect(validateFrontendConfig({ frontend: { buildTool } }).errors).toEqual([]);
+    }
+  });
+
+  test('rejects an unknown build tool', () => {
+    const { errors } = validateFrontendConfig({ frontend: { buildTool: 'webpack' as never } });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('frontend.buildTool');
+    expect(errors[0]).toContain('"webpack"');
   });
 });
 

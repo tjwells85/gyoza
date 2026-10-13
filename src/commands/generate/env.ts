@@ -2,7 +2,9 @@ import { copyFileSync, existsSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { confirm } from '../../prompt.ts';
+import type { PackageJson } from 'type-fest';
+import { loadConfig, validateFrontendConfig, type FrontendBuildToolSetting } from '../../config.ts';
+import { choose, confirm } from '../../prompt.ts';
 
 const PROJECT_ROOT = process.cwd();
 const SERVER_ENV_TS = join(PROJECT_ROOT, 'server/env.ts');
@@ -18,14 +20,54 @@ const BUILD_TOOL_EXPECTED_PREFIX: Record<FrontendBuildTool, string> = {
   rsbuild: 'PUBLIC_',
 };
 
+const BUILD_TOOL_PACKAGE: Record<FrontendBuildTool, string> = {
+  vite: 'vite',
+  rsbuild: '@rsbuild/core',
+};
+
+const BUILD_TOOLS: readonly FrontendBuildTool[] = ['vite', 'rsbuild'];
+
 const CONFIG_FILE_EXTENSIONS = ['ts', 'js', 'mts', 'mjs', 'cts', 'cjs'];
 
-/** Detects the frontend build tool by config file presence. Both tools support the same `interface ImportMetaEnv` shape, so only the expected var prefix differs. */
-export const detectFrontendBuildTool = (frontendDir: string): FrontendBuildTool | undefined => {
-  const hasConfig = (base: string): boolean => CONFIG_FILE_EXTENSIONS.some((ext) => existsSync(join(frontendDir, `${base}.${ext}`)));
-  if (hasConfig('vite.config')) return 'vite';
-  if (hasConfig('rsbuild.config')) return 'rsbuild';
-  return undefined;
+/** Every build tool with a config file in `frontendDir`. Both tools support the same `interface ImportMetaEnv` shape, so only the expected var prefix differs. */
+export const detectFrontendBuildTools = (frontendDir: string): FrontendBuildTool[] =>
+  BUILD_TOOLS.filter((tool) => CONFIG_FILE_EXTENSIONS.some((ext) => existsSync(join(frontendDir, `${tool}.config.${ext}`))));
+
+/** Every build tool whose package is declared in `frontendDir/package.json` deps or devDeps. Missing/unparseable file → none. */
+export const declaredFrontendBuildTools = (frontendDir: string): FrontendBuildTool[] => {
+  const pkgPath = join(frontendDir, 'package.json');
+  if (!existsSync(pkgPath)) return [];
+
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as PackageJson;
+    const declared = { ...pkg.dependencies, ...pkg.devDependencies };
+    return BUILD_TOOLS.filter((tool) => declared[BUILD_TOOL_PACKAGE[tool]] !== undefined);
+  } catch {
+    return [];
+  }
+};
+
+export type BuildToolResolution =
+  | { kind: 'resolved'; tool: FrontendBuildTool; source: 'config' | 'detected' | 'dependency' }
+  | { kind: 'ambiguous' }
+  | { kind: 'none' };
+
+/**
+ * An explicit setting wins outright. Under `'auto'`, a lone config file decides; when
+ * both exist (e.g. a stub `vite.config.ts` kept for shadcn's CLI), the one tool declared
+ * as a dependency decides. Anything still unclear is `ambiguous` — never a silent pick.
+ */
+export const resolveFrontendBuildTool = (setting: FrontendBuildToolSetting, frontendDir: string): BuildToolResolution => {
+  if (setting !== 'auto') return { kind: 'resolved', tool: setting, source: 'config' };
+
+  const detected = detectFrontendBuildTools(frontendDir);
+  if (detected.length === 0) return { kind: 'none' };
+  if (detected.length === 1) return { kind: 'resolved', tool: detected[0], source: 'detected' };
+
+  const declared = declaredFrontendBuildTools(frontendDir);
+  if (declared.length === 1) return { kind: 'resolved', tool: declared[0], source: 'dependency' };
+
+  return { kind: 'ambiguous' };
 };
 
 /** Rsbuild's expected prefix is only its configured default; a custom `loadEnv({ prefixes })` isn't read here. */
@@ -458,7 +500,40 @@ export const correctFrontendEnvPrefix = (src: string, tool: FrontendBuildTool): 
   return { corrected: lines.join('\n'), renamed };
 };
 
-const generateFrontendEnv = async (): Promise<void> => {
+/** Turns a resolution into a tool to check against, prompting when both tools are plausible. `undefined` skips prefix checking. */
+const pickFrontendBuildTool = async (setting: FrontendBuildToolSetting): Promise<FrontendBuildTool | undefined> => {
+  const resolution = resolveFrontendBuildTool(setting, FRONTEND_DIR);
+
+  if (resolution.kind === 'none') return undefined;
+
+  if (resolution.kind === 'resolved') {
+    if (resolution.source === 'dependency') {
+      console.log(
+        `  Build tool: ${resolution.tool} (both configs found; only ${BUILD_TOOL_PACKAGE[resolution.tool]} is a dependency)`,
+      );
+    }
+    return resolution.tool;
+  }
+
+  console.log('  ⚠ Both vite.config.* and rsbuild.config.* found in frontend/, and package.json does not settle it');
+  const hint = `    Set frontend.buildTool in gyoza.config.ts to skip this check`;
+
+  if (!process.stdin.isTTY) {
+    console.log('  (non-interactive — skipping prefix check)');
+    console.log(hint);
+    return undefined;
+  }
+
+  const tool = await choose('Which build tool does this frontend use?', BUILD_TOOLS);
+  if (!tool) {
+    console.log('  No build tool chosen — skipping prefix check');
+    return undefined;
+  }
+  console.log(hint);
+  return tool;
+};
+
+const generateFrontendEnv = async (buildToolSetting: FrontendBuildToolSetting): Promise<void> => {
   console.log('\n🎨 Generating frontend environment file...');
 
   if (!existsSync(FRONTEND_ENV_TS)) {
@@ -474,7 +549,7 @@ const generateFrontendEnv = async (): Promise<void> => {
     console.log('  ✓ Auto-corrected readonly in frontend/src/env.d.ts');
   }
 
-  const buildTool = detectFrontendBuildTool(FRONTEND_DIR);
+  const buildTool = await pickFrontendBuildTool(buildToolSetting);
   const renameCandidates = buildTool ? correctFrontendEnvPrefix(workingSrc, buildTool).renamed : [];
   let renamedFields: [string, string][] = [];
 
@@ -539,11 +614,20 @@ const generateServerEnv = async (): Promise<void> => {
 };
 
 const generateEnv = async (): Promise<void> => {
+  const config = await loadConfig(PROJECT_ROOT);
+
+  const { errors } = validateFrontendConfig(config);
+  if (errors.length > 0) {
+    console.error('\n❌ Invalid frontend config in gyoza.config.ts:');
+    for (const error of errors) console.error(`  ✗ ${error}`);
+    process.exit(1);
+  }
+
   console.log('🚀 Generating environment files...');
 
   try {
     await generateServerEnv();
-    await generateFrontendEnv();
+    await generateFrontendEnv(config.frontend?.buildTool ?? 'auto');
     console.log('\n✅ Environment generation complete');
   } catch (error) {
     console.error('\n❌ Environment generation failed:');

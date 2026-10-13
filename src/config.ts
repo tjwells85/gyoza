@@ -133,10 +133,24 @@ export interface DeployConfig {
   service?: string | string[];
 }
 
+/**
+ * Which frontend build tool's env prefix `gyoza generate env` checks against.
+ * - `'auto'`    — detect from `frontend/` config files, tiebreaking on `package.json` deps (default)
+ * - `'vite'`    — expect `VITE_`
+ * - `'rsbuild'` — expect `PUBLIC_`
+ */
+export type FrontendBuildToolSetting = 'auto' | 'vite' | 'rsbuild';
+
+export interface FrontendConfig {
+  /** Default: 'auto'. Set explicitly when a stub config (e.g. a `vite.config.ts` kept for shadcn) confuses detection. */
+  buildTool?: FrontendBuildToolSetting;
+}
+
 export interface GyozaConfig {
   build?: BuildConfig;
   custom?: CustomScripts;
   deploy?: DeployConfig;
+  frontend?: FrontendConfig;
 }
 
 export const defaultConfig: GyozaConfig = {
@@ -177,6 +191,7 @@ export interface DefineConfigInput<TPre> {
   };
   custom?: CustomScripts;
   deploy?: DeployConfig;
+  frontend?: FrontendConfig;
 }
 
 /**
@@ -358,6 +373,24 @@ export const validateDeployConfig = (config: GyozaConfig): ConfigDiagnostics => 
   return { errors, warnings };
 };
 
+const FRONTEND_BUILD_TOOL_SETTINGS: readonly FrontendBuildToolSetting[] = ['auto', 'vite', 'rsbuild'];
+
+/** Checks the `frontend` block. Same `{ errors, warnings }` shape as `validateBuildConfig`. */
+export const validateFrontendConfig = (config: GyozaConfig): ConfigDiagnostics => {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const buildTool: unknown = config.frontend?.buildTool;
+
+  if (buildTool !== undefined && !FRONTEND_BUILD_TOOL_SETTINGS.includes(buildTool as FrontendBuildToolSetting)) {
+    errors.push(
+      `frontend.buildTool must be one of ${FRONTEND_BUILD_TOOL_SETTINGS.map(s => `'${s}'`).join(', ')}. ` +
+        `Got ${JSON.stringify(buildTool)}.`,
+    );
+  }
+
+  return { errors, warnings };
+};
+
 /**
  * Flattens either form into an ordered list. Object insertion order is preserved;
  * array-form and legacy steps keep their existing position after the keyed ones.
@@ -403,6 +436,7 @@ const mergeConfig = (base: GyozaConfig, override: Partial<GyozaConfig>): GyozaCo
     },
     custom: override.custom ?? base.custom,
     deploy: override.deploy ?? base.deploy,
+    frontend: override.frontend ?? base.frontend,
   };
 };
 

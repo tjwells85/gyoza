@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.11.0] - 2026-10-13
+
+### Added
+
+- `frontend.buildTool` in `gyoza.config.ts` — `'auto'` (default), `'vite'`, or
+  `'rsbuild'`. An explicit value skips detection entirely in
+  `gyoza generate env`. Any other value aborts before either `.env` is written
+  - `FrontendConfig` and `FrontendBuildToolSetting` are exported from `gyoza`
+- `choose()` in `src/prompt.ts` — pick one option by number or name
+
+### Fixed
+
+- `gyoza generate env` no longer assumes Vite when `frontend/` has both a
+  `vite.config.*` and an `rsbuild.config.*` — the usual shape of an Rsbuild
+  project that keeps a stub `vite.config.ts` for shadcn's CLI, which previously
+  had every `PUBLIC_` field flagged and offered for renaming to `VITE_`
+  - Both present → the one of `vite` / `@rsbuild/core` declared in
+    `frontend/package.json` decides
+  - Still ambiguous → prompts in a TTY; a non-interactive run skips the prefix
+    check. Both suggest setting `frontend.buildTool`
+  - `detectFrontendBuildTool` is replaced by `detectFrontendBuildTools`,
+    `declaredFrontendBuildTools`, and `resolveFrontendBuildTool`
+
 ## [0.10.0] - 2026-09-23
 
 ### Added

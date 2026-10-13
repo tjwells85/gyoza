@@ -10,6 +10,8 @@ export type {
   DeployConfig,
   DeployMigrate,
   DeployMigrateContext,
+  FrontendBuildToolSetting,
+  FrontendConfig,
   GyozaConfig,
   PostStepContext,
   PreStepContext,

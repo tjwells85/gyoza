@@ -375,6 +375,30 @@ interface DeployMigrateContext {
 
 ---
 
+## `frontend` config
+
+Facts about the frontend that gyoza can't always detect reliably. Currently read by
+[gyoza generate env](generate.md#build-tool-detection-vite-vs-rsbuild) to pick the expected
+env var prefix.
+
+```ts
+import { defineConfig } from 'gyoza';
+
+export default defineConfig({
+  frontend: {
+    buildTool: 'rsbuild',
+  },
+});
+```
+
+### Fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `buildTool` | `'auto'` \| `'vite'` \| `'rsbuild'` | `'auto'` | `'auto'` detects from `frontend/` config files, tiebreaking on `package.json` deps when both exist. Set it explicitly when a stub config (e.g. a `vite.config.ts` kept for shadcn's CLI) would mislead detection. Any other value aborts `gyoza generate env` |
+
+---
+
 ## Full example
 
 ```ts
@@ -408,6 +432,9 @@ export default defineConfig({
   deploy: {
     migrate: 'db:migrate',
     service: ['app', 'worker'],
+  },
+  frontend: {
+    buildTool: 'rsbuild',
   },
   custom: {
     init: {

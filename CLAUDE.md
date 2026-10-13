@@ -316,8 +316,13 @@ starting with `@`) and `comments` (all other lines). Supported directives:
 
 Vite and Rsbuild both support the `interface ImportMetaEnv` / `interface ImportMeta` shape in
 `frontend/src/env.d.ts`, so `parseFrontendEnvTs` needs no branching — it's the same source shape
-either way. `detectFrontendBuildTool` checks `frontend/` for `vite.config.*` vs `rsbuild.config.*`
-(by presence only, first match wins if somehow both exist).
+either way. `resolveFrontendBuildTool` picks the tool: an explicit `frontend.buildTool` in
+`gyoza.config.ts` wins outright; under `'auto'` (default) a lone `vite.config.*` / `rsbuild.config.*`
+decides; when **both** exist it tiebreaks on which of `vite` / `@rsbuild/core` is declared in
+`frontend/package.json`. Both configs is a real case, not a misconfiguration — shadcn's CLI only
+recognises Vite, so Rsbuild projects keep a stub `vite.config.ts`. Still ambiguous → `choose()` prompt
+in a TTY, skip the prefix check otherwise. **Never silently pick one** — the old "vite wins" order
+flagged every `PUBLIC_` field in exactly that shadcn setup.
 
 `correctFrontendEnvPrefix` finds fields in `interface ImportMetaEnv` using the *other* tool's known
 prefix (`VITE_` <-> `PUBLIC_`) and computes the swap — this is the only case treated as an
@@ -334,8 +339,10 @@ rename, or one that never had a clean swap in the first place — but skips fiel
 *candidates* even when declined, so the same mismatch doesn't get both the specific rename prompt
 output and a second generic warning.
 
-No config file found → prefix checking (both the rename prompt and `warnPrefixMismatches`) is
-skipped entirely. A project-level custom Rsbuild prefix (`loadEnv({ prefixes })`) is not read from
+No build tool resolved (no config file, or ambiguous and declined/non-interactive) → prefix checking
+(both the rename prompt and `warnPrefixMismatches`) is skipped entirely. An invalid
+`frontend.buildTool` value aborts with exit 1 before either `.env` is written
+(`validateFrontendConfig`). A project-level custom Rsbuild prefix (`loadEnv({ prefixes })`) is not read from
 `rsbuild.config.*`, so it can produce a false warning/prompt — accepted as a known gap rather than
 parsing the Rsbuild config.
 
@@ -548,6 +555,12 @@ Before considering the initial implementation complete:
 - [ ] a malformed `deploy` config (numeric `service`, empty `migrate`) aborts with
       exit 1 before anything is pulled
 - [ ] an unknown flag to `gyoza deploy` exits 1 listing the supported flags
+- [ ] `gyoza generate env` with a stub `vite.config.ts` + `rsbuild.config.ts` and only
+      `@rsbuild/core` declared checks against `PUBLIC_` with no prompt
+- [ ] both configs + both packages declared prompts to choose in a TTY; without a TTY
+      skips the prefix check and suggests `frontend.buildTool`
+- [ ] `frontend.buildTool: 'rsbuild'` overrides detection; `'webpack'` exits 1 before
+      any `.env` is written
 - [ ] Unknown commands print an error and exit 1
 - [ ] `bunx tsc --noEmit` passes with zero errors
 - [ ] `bun run lint` passes with zero errors and zero warnings

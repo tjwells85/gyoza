@@ -71,10 +71,30 @@ export const env = z.object({
 ### Build tool detection (Vite vs Rsbuild)
 
 Both Vite and Rsbuild support the same `interface ImportMetaEnv` / `interface ImportMeta` shape in
-`frontend/src/env.d.ts`, so parsing and rendering are identical either way. Gyoza detects which tool
-is in use by checking `frontend/` for a `vite.config.*` or `rsbuild.config.*` file, then checks
-every field name against the tool's expected prefix — `VITE_` for Vite, `PUBLIC_` for Rsbuild's
-default.
+`frontend/src/env.d.ts`, so parsing and rendering are identical either way. Gyoza works out which
+tool is in use, then checks every field name against its expected prefix — `VITE_` for Vite,
+`PUBLIC_` for Rsbuild's default.
+
+The tool is resolved in this order:
+
+1. `frontend.buildTool` in `gyoza.config.ts` set to `'vite'` or `'rsbuild'` — used as-is, no detection.
+2. Otherwise (`'auto'`, the default), exactly one of `vite.config.*` / `rsbuild.config.*` in `frontend/`
+   decides.
+3. Both present — common when a stub `vite.config.ts` is kept so shadcn's CLI recognises the project —
+   `frontend/package.json` decides if exactly one of `vite` / `@rsbuild/core` is in `dependencies` or
+   `devDependencies`.
+4. Still ambiguous — an interactive terminal prompts you to pick; a non-interactive run skips the prefix
+   check and says so. Either way, gyoza suggests setting `frontend.buildTool`.
+5. Neither config present — prefix checking is skipped.
+
+```ts
+// gyoza.config.ts — Rsbuild project with a shadcn stub vite.config.ts
+export default defineConfig({
+  frontend: { buildTool: 'rsbuild' },
+});
+```
+
+Once the tool is known:
 
 - A field using the *other* tool's prefix (e.g. `VITE_API_URL` when Rsbuild is detected) is an
   unambiguous swap. In an interactive terminal, gyoza lists the rename(s) and prompts
@@ -85,7 +105,6 @@ default.
 - If a project overrides Rsbuild's default prefix via `loadEnv({ prefixes: [...] })`, gyoza still
   checks against `PUBLIC_` and may warn/prompt incorrectly — it doesn't parse `rsbuild.config.*` for
   a custom prefix.
-- If neither config file is found, prefix checking is skipped entirely.
 
 ### Safety behavior
 
