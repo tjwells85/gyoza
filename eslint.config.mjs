@@ -28,11 +28,16 @@ export const baseConfig = defineConfig([
   },
 
   // TypeScript-specific config
-  ...tseslint.configs.recommended.map((config) => ({
-    ...config,
+  ...tseslint.configs.recommended,
+  {
+    files: ["**/*.{ts,tsx}"],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
-      ...(config.rules || {}),
-      // Allow unused vars/imports if prefixed with underscore
       "@typescript-eslint/no-unused-vars": [
         "warn",
         {
@@ -42,8 +47,9 @@ export const baseConfig = defineConfig([
         },
       ],
       "@typescript-eslint/ban-ts-comment": "off",
+      "@typescript-eslint/no-deprecated": "warn",
     },
-  })),
+  },
 
   // Prettier (must be last to override formatting rules)
   eslintConfigPrettier,
