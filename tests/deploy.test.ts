@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { validateDeployConfig } from '../src/config.ts';
+import { loadConfig, validateDeployConfig } from '../src/config.ts';
 import type { GyozaConfig } from '../src/config.ts';
 import {
   currentBranch,
@@ -58,8 +58,13 @@ describe('detectChanges', () => {
   });
 
   test('empty diff yields no changes', () => {
-    expect(detectChanges('')).toEqual({ lockChanged: false, sqlFiles: [] });
-    expect(detectChanges('\n  \n')).toEqual({ lockChanged: false, sqlFiles: [] });
+    expect(detectChanges('')).toEqual({ lockChanged: false, configChanged: false, sqlFiles: [] });
+    expect(detectChanges('\n  \n')).toEqual({ lockChanged: false, configChanged: false, sqlFiles: [] });
+  });
+
+  test('flags a root gyoza.config.ts only', () => {
+    expect(detectChanges('gyoza.config.ts\nsrc/app.ts').configChanged).toBe(true);
+    expect(detectChanges('packages/api/gyoza.config.ts').configChanged).toBe(false);
   });
 });
 
@@ -119,6 +124,40 @@ describe('validateDeployConfig', () => {
   test('rejects an empty service array and blank entries', () => {
     expect(diagnose({ service: [] }).errors[0]).toContain('empty array');
     expect(diagnose({ service: ['app', ' '] }).errors[0]).toContain('deploy.service[1]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadConfig after a pull rewrites gyoza.config.ts
+// ---------------------------------------------------------------------------
+
+describe('loadConfig reload', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'gyoza-deploy-config-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const writeConfig = (service: string): void => {
+    writeFileSync(join(dir, 'gyoza.config.ts'), `export default { deploy: { service: '${service}' } };\n`);
+  };
+
+  test('picks up a rewritten config instead of the cached module', async () => {
+    writeConfig('old-app');
+    expect((await loadConfig(dir)).deploy?.service).toBe('old-app');
+
+    writeConfig('new-app');
+    expect((await loadConfig(dir)).deploy?.service).toBe('new-app');
+  });
+
+  test('an unchanged config still loads', async () => {
+    writeConfig('app');
+    expect((await loadConfig(dir)).deploy?.service).toBe('app');
+    expect((await loadConfig(dir)).deploy?.service).toBe('app');
   });
 });
 

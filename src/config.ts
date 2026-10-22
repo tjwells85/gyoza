@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Values returned by steps that have already run, keyed by their step key. */
@@ -445,7 +445,11 @@ export const loadConfig = async (projectRoot: string): Promise<GyozaConfig> => {
   if (!existsSync(configPath)) return defaultConfig;
 
   try {
-    const mod = await import(configPath);
+    // Bun caches modules by specifier, so a plain re-import after `gyoza deploy`
+    // pulls a new config returns the old one. Keying on a content hash re-evaluates
+    // only when the file actually changed. Modules the config imports stay cached.
+    const hash = Bun.hash(readFileSync(configPath)).toString(36);
+    const mod = await import(`${configPath}?v=${hash}`);
     const userConfig: Partial<GyozaConfig> = mod.default ?? {};
     const merged = mergeConfig(defaultConfig, userConfig);
     // mergeConfig builds a fresh object, so the brand has to be carried across

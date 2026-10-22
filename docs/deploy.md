@@ -36,6 +36,9 @@ it from.
    `deploy.service` is unset it asks whether to finish without a restart.
 2. **Pull.** `git pull --ff-only origin <current-branch>`. Fast-forward only — if
    the server checkout has diverged, the pull aborts and nothing else runs.
+   If the pull changed `gyoza.config.ts`, the config is reloaded and re-validated
+   here, so every later step uses the new values (a renamed `deploy.service`,
+   new build steps, …).
 3. **Install.** Runs `bun install` only if `bun.lock` is among the pulled changes.
 4. **Migrate.** Runs `deploy.migrate` (see below).
 5. **Build.** Runs `gyoza build` in-process. A build failure stops the deploy here,
@@ -139,6 +142,7 @@ deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart app.service
 | Situation | Result |
 | --- | --- |
 | `deploy` config malformed (numeric `service`, empty `migrate`, …) | Exit 1 before anything is pulled |
+| Pulled `gyoza.config.ts` has a malformed `deploy` block | Exit 1 after the pull, before install — the service is **not** restarted |
 | `cwd` is not a git work tree, or HEAD is detached | Exit 1 |
 | Working tree has uncommitted changes | Exit 1 — commit or stash first |
 | `deploy.service` / `deploy.migrate` unset in a non-interactive shell | Exit 1 naming the field and `--yes` |
@@ -155,3 +159,10 @@ Runs against `process.cwd()`, like everything except `gyoza upgrade`.
 A failed deploy is **not** rolled back — the pull stays applied. Re-run
 `gyoza deploy` once the cause is fixed; the pull step is a no-op the second time
 and the remaining steps proceed.
+
+`--dry` describes the **pre-pull** config. When the incoming commits touch
+`gyoza.config.ts` the plan says so; the real deploy reloads it after pulling.
+
+Only `gyoza.config.ts` itself is reloaded. A local module it imports (say a
+`build-steps.ts` helper) stays at its pre-pull version for the rest of that run;
+re-run with `--force` if such a file changed.

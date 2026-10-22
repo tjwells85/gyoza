@@ -45,14 +45,16 @@ export const parseDeployArgs = (args: string[]): DeployArgs => {
 
 export interface DetectedChanges {
   lockChanged: boolean;
+  configChanged: boolean;
   sqlFiles: string[];
 }
 
-/** Reads `git diff --name-only` output: did the lockfile move, and which `.sql` files changed. */
+/** Reads `git diff --name-only` output: did the lockfile or root config move, and which `.sql` files changed. */
 export const detectChanges = (diffNameOnly: string): DetectedChanges => {
   const files = diffNameOnly.split('\n').map((line) => line.trim()).filter(Boolean);
   return {
     lockChanged: files.some((f) => f === 'bun.lock' || f.endsWith('/bun.lock')),
+    configChanged: files.includes('gyoza.config.ts'),
     sqlFiles: files.filter((f) => f.toLowerCase().endsWith('.sql')),
   };
 };
@@ -132,6 +134,10 @@ const printDryPlan = async (cwd: string, branch: string, deploy: DeployConfig): 
   console.log(`  Migrate:     ${describeMigrate(deploy.migrate, changes.sqlFiles.length)}`);
   console.log('  Build:       gyoza build');
   console.log(`  Restart:     ${describeService(deploy.service)}`);
+  if (changes.configChanged) {
+    console.log('  Config:      gyoza.config.ts changes in this pull — migrate/restart above reflect the');
+    console.log('               current config; the deploy reloads it after pulling');
+  }
 };
 
 const runMigrate = async (
@@ -174,6 +180,29 @@ const runMigrate = async (
   if (!proceed) fail('Aborted — set deploy.migrate in gyoza.config.ts.');
 };
 
+const loadDeployConfig = async (cwd: string): Promise<DeployConfig> => {
+  const config = await loadConfig(cwd);
+  const { errors } = validateDeployConfig(config);
+  if (errors.length > 0) {
+    console.error('\n❌ Invalid deploy config in gyoza.config.ts:');
+    for (const error of errors) console.error(`  ✗ ${error}`);
+    process.exit(1);
+  }
+  return config.deploy ?? {};
+};
+
+const confirmNoService = async (yes: boolean): Promise<void> => {
+  if (!yes && nonInteractive()) {
+    fail(
+      'deploy.service is not configured and gyoza cannot prompt in a non-interactive shell.\n' +
+        '  Set deploy.service in gyoza.config.ts, or pass --yes to deploy without a restart.',
+    );
+  }
+  const proceed =
+    yes || (await confirm('No deploy.service configured. Finish the deploy without restarting a service?', false));
+  if (!proceed) fail('Aborted — set deploy.service in gyoza.config.ts.');
+};
+
 // ---------------------------------------------------------------------------
 // Command
 // ---------------------------------------------------------------------------
@@ -184,15 +213,7 @@ const runDeploy = async (args: string[]): Promise<void> => {
   try {
     const { dry, yes, force } = parseDeployArgs(args);
 
-    const config = await loadConfig(cwd);
-    const deploy: DeployConfig = config.deploy ?? {};
-
-    const { errors } = validateDeployConfig(config);
-    if (errors.length > 0) {
-      console.error('\n❌ Invalid deploy config in gyoza.config.ts:');
-      for (const error of errors) console.error(`  ✗ ${error}`);
-      process.exit(1);
-    }
+    let deploy = await loadDeployConfig(cwd);
 
     // --- git preflight: nothing is mutated past this point on failure ---
     const insideRepo = await capture(['git', 'rev-parse', '--is-inside-work-tree'], cwd);
@@ -219,17 +240,7 @@ const runDeploy = async (args: string[]): Promise<void> => {
     }
 
     // Settle the service question before pulling, so an unattended run fails fast.
-    if (deploy.service === undefined) {
-      if (!yes && nonInteractive()) {
-        fail(
-          'deploy.service is not configured and gyoza cannot prompt in a non-interactive shell.\n' +
-            '  Set deploy.service in gyoza.config.ts, or pass --yes to deploy without a restart.',
-        );
-      }
-      const proceed =
-        yes || (await confirm('No deploy.service configured. Finish the deploy without restarting a service?', false));
-      if (!proceed) fail('Aborted — set deploy.service in gyoza.config.ts.');
-    }
+    if (deploy.service === undefined) await confirmNoService(yes);
 
     const before = (await capture(['git', 'rev-parse', 'HEAD'], cwd)).stdout.trim();
 
@@ -250,6 +261,15 @@ const runDeploy = async (args: string[]): Promise<void> => {
     if (before === after && !force) {
       console.log('\n✓  Already up to date — nothing to deploy. (use --force to rebuild and restart)');
       return;
+    }
+
+    // Everything past the pull must run against the config it brought in.
+    if (changes.configChanged) {
+      console.log('\n🔁  gyoza.config.ts changed — reloading config...');
+      const hadService = deploy.service !== undefined;
+      deploy = await loadDeployConfig(cwd);
+      // Only ask if the pull removed the service — an unset one was already confirmed above.
+      if (hadService && deploy.service === undefined) await confirmNoService(yes);
     }
 
     if (changes.lockChanged) {

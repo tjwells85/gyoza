@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.11.1] - 2026-10-22
+
+### Fixed
+
+- `gyoza deploy` used the pre-pull `gyoza.config.ts` for every step after the
+  pull, so a renamed `deploy.service` restarted the old, nonexistent unit and
+  changed build steps didn't run
+  - When the pulled diff includes `gyoza.config.ts`, the config is reloaded and
+    the `deploy` block re-validated before install/migrate/build/restart. If the
+    pull removed `deploy.service`, the no-restart prompt is asked again
+  - `loadConfig` now keys its import on the file's content hash, so any repeat
+    load in the same process sees the current file — this also fixes the build
+    step inside a deploy. Local modules the config imports are still cached
+  - `--dry` notes when incoming commits change `gyoza.config.ts`
+
+### Changed
+
+- Linting uses the type-aware `typescript-eslint` config with
+  `@typescript-eslint/no-deprecated`. The intentional reads of the deprecated
+  `BuildStep.phase` in `gyoza build`'s legacy `build.steps` routing are
+  suppressed inline
+
 ## [0.11.0] - 2026-10-13
 
 ### Added

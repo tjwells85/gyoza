@@ -3,24 +3,11 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { $ } from 'bun';
 import { loadConfig, normalizeSteps, validateBuildConfig } from '../config.ts';
-import type {
-  BuildContext,
-  BuildStep,
-  BuildSteps,
-  CheckAction,
-  LintCheckLevel,
-  NormalizedStep,
-  StepResults,
-  TypeCheckLevel,
-} from '../config.ts';
+import type { BuildContext, BuildStep, BuildSteps, CheckAction, LintCheckLevel, NormalizedStep, StepResults, TypeCheckLevel } from '../config.ts';
 
 const spawnCaptured = async (cmd: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
   const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', cwd });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { stdout, stderr, exitCode };
 };
 
@@ -78,17 +65,16 @@ const runLint = async (projectRoot: string, level: LintCheckLevel): Promise<bool
       warnings += file.warningCount;
     }
     parsed = true;
-  } catch { /* fall through to generic message */ }
+  } catch {
+    /* fall through to generic message */
+  }
 
   const parts: string[] = [];
   if (errors > 0) parts.push(`${errors} error${errors !== 1 ? 's' : ''}`);
   if (warnings > 0) parts.push(`${warnings} warning${warnings !== 1 ? 's' : ''}`);
   const summary = parsed && parts.length > 0 ? parts.join(', ') : 'issues found';
 
-  const shouldFail =
-    (errors > 0 && resolved.onError === 'fail') ||
-    (warnings > 0 && resolved.onWarning === 'fail') ||
-    (!parsed && resolved.onError === 'fail');
+  const shouldFail = (errors > 0 && resolved.onError === 'fail') || (warnings > 0 && resolved.onWarning === 'fail') || (!parsed && resolved.onError === 'fail');
 
   if (shouldFail) {
     console.error(`  ✗ ESLint: ${summary}`);
@@ -216,13 +202,15 @@ const runBuild = async (_args: string[]): Promise<void> => {
     }
 
     const legacySteps = build.steps ?? [];
-    const preSteps = normalizeSteps(build.pre, legacySteps.filter(s => s.phase === 'pre'));
-    const postSteps = normalizeSteps(build.post, legacySteps.filter(s => s.phase !== 'pre'));
+    // Routing deprecated `build.steps` by `phase` is the backward-compat path.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    const legacyPre = legacySteps.filter((s) => s.phase === 'pre');
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    const legacyPost = legacySteps.filter((s) => s.phase !== 'pre');
+    const preSteps = normalizeSteps(build.pre, legacyPre);
+    const postSteps = normalizeSteps(build.post, legacyPost);
 
-    const [typecheckOk, lintOk] = await Promise.all([
-      runTypecheck(projectRoot, build.typecheck ?? 'off'),
-      runLint(projectRoot, build.lint ?? 'off'),
-    ]);
+    const [typecheckOk, lintOk] = await Promise.all([runTypecheck(projectRoot, build.typecheck ?? 'off'), runLint(projectRoot, build.lint ?? 'off')]);
 
     if (!typecheckOk || !lintOk) {
       console.error('\n❌ Pre-build checks failed. Fix issues or set the level to "warn" to proceed.');

@@ -555,6 +555,8 @@ Before considering the initial implementation complete:
 - [ ] a malformed `deploy` config (numeric `service`, empty `migrate`) aborts with
       exit 1 before anything is pulled
 - [ ] an unknown flag to `gyoza deploy` exits 1 listing the supported flags
+- [ ] a pull that renames `deploy.service` in `gyoza.config.ts` restarts the new
+      unit, not the old one
 - [ ] `gyoza generate env` with a stub `vite.config.ts` + `rsbuild.config.ts` and only
       `@rsbuild/core` declared checks against `PUBLIC_` with no prompt
 - [ ] both configs + both packages declared prompts to choose in a TTY; without a TTY
@@ -981,6 +983,17 @@ no dot. The deploy user needs a NOPASSWD sudoers entry for the restart.
 and returns `false` on closed stdin, so `deploy.ts` checks `process.stdin.isTTY`
 explicitly before each prompt to give a clear message rather than a bare abort.
 `confirm()` itself is unchanged — other commands depend on its current behaviour.
+
+### Config reload after the pull
+
+Bun caches `import()` by specifier, so a second plain import of `gyoza.config.ts`
+returns the pre-pull module — a renamed `deploy.service` restarted the old,
+nonexistent unit, and `runBuild`'s own `loadConfig` call ran stale build steps.
+`loadConfig` imports `gyoza.config.ts?v=<content hash>`, so every call reflects the
+file on disk; unchanged content reuses the cached module. When the pulled diff
+contains the root `gyoza.config.ts`, `runDeploy` reloads and re-validates the
+`deploy` block, and re-prompts only if the pull *removed* `deploy.service`. Modules
+the config imports are not re-evaluated — documented, not fixed.
 
 ### Failure leaves the old service running
 
