@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { PackageJson } from 'type-fest';
 import { compareVersions } from '../version.ts';
@@ -69,17 +69,50 @@ export const changelogSince = (markdown: string, fromVersion: string): string =>
 };
 
 /**
- * The installed gyoza package root. This is the one command that deliberately
- * resolves against its own install location rather than process.cwd() — it is
- * updating itself, not the project.
+ * The installed gyoza package root. Resolved against gyoza's own install location
+ * rather than process.cwd() — used only where gyoza asks about itself: this
+ * command, and `gyoza deploy` checking whether `bun install` replaced it.
  */
-const gyozaPackageDir = (): string => resolve(import.meta.dir, '..', '..');
+export const gyozaPackageDir = (): string => resolve(import.meta.dir, '..', '..');
 
-const readGyozaVersion = (dir: string): string | undefined => {
+export const readGyozaVersion = (dir: string): string | undefined => {
   const path = join(dir, 'package.json');
   if (!existsSync(path)) return undefined;
   return readPackageJson<PackageJson>(path).version;
 };
+
+/**
+ * The commit out of bun's `.bun-tag` for a git install — `tjwells85-gyoza-03d9105`.
+ * The file is undocumented bun internals, so anything unexpected yields undefined
+ * and callers fall back to the version.
+ */
+export const parseBunTag = (tag: string): string | undefined => /-([0-9a-f]{7,40})$/.exec(tag.trim())?.[1];
+
+export const readGyozaCommit = (dir: string): string | undefined => {
+  const path = join(dir, '.bun-tag');
+  if (!existsSync(path)) return undefined;
+  return parseBunTag(readFileSync(path, 'utf8'));
+};
+
+export interface GyozaInstall {
+  version?: string;
+  /** From bun's `.bun-tag` — present for git installs, which is how gyoza is consumed. */
+  commit?: string;
+}
+
+export const readGyozaInstall = (dir: string): GyozaInstall => ({
+  version: readGyozaVersion(dir),
+  commit: readGyozaCommit(dir),
+});
+
+/** By commit when both sides have one — an unbumped commit still counts — else by version. */
+export const installChanged = (before: GyozaInstall, after: GyozaInstall): boolean =>
+  before.commit !== undefined && after.commit !== undefined
+    ? before.commit !== after.commit
+    : before.version !== after.version;
+
+export const describeInstall = ({ version, commit }: GyozaInstall): string =>
+  `${version ?? '(unknown version)'}${commit ? ` (${commit.slice(0, 7)})` : ''}`;
 
 export const run = async (_args: string[]): Promise<void> => {
   const cwd = process.cwd();
@@ -101,10 +134,10 @@ export const run = async (_args: string[]): Promise<void> => {
       throw new Error(`gyoza is running from a source checkout (${packageDir}), not an installed dependency. Nothing to update.`);
     }
 
-    const before = readGyozaVersion(packageDir);
-    if (before === undefined) throw new Error(`Could not read the installed gyoza version at ${packageDir}.`);
+    const before = readGyozaInstall(packageDir);
+    if (before.version === undefined) throw new Error(`Could not read the installed gyoza version at ${packageDir}.`);
 
-    console.log(`Current: gyoza ${before}`);
+    console.log(`Current: gyoza ${describeInstall(before)}`);
     if (declaration.ref) {
       console.log(`  ⚠ The spec targets "${declaration.ref}" — a branch will move, a tag or commit will not.`);
     }
@@ -118,36 +151,41 @@ export const run = async (_args: string[]): Promise<void> => {
 
     if (exitCode !== 0) throw new Error(`bun update gyoza exited with code ${exitCode}.`);
 
-    const after = readGyozaVersion(packageDir);
+    const after = readGyozaInstall(packageDir);
 
-    if (after === undefined) {
+    if (after.version === undefined) {
       console.log('\n  ⚠ Updated, but the new version could not be read.');
       return;
     }
 
-    if (after === before) {
-      console.log(`\n  ✓  Already up to date (gyoza ${after}).`);
+    if (!installChanged(before, after)) {
+      console.log(`\n  ✓  Already up to date (gyoza ${describeInstall(after)}).`);
       if (declaration.ref) {
         console.log(`     If "${declaration.ref}" is a tag or commit, bun update cannot move it — edit the spec in ${declaration.dir}/package.json.`);
       }
       return;
     }
 
-    const forwards = compareVersions(after, before) > 0;
+    const moved = `gyoza ${describeInstall(before)} -> ${describeInstall(after)}`;
 
-    if (forwards) {
-      console.log(`\n  ✓  Updated gyoza ${before} -> ${after}`);
+    if (after.version === before.version) {
+      // A new commit without a version bump. There's no changelog section to
+      // print, and two commits on the same version can't be ordered.
+      console.log(`\n  ✓  Updated ${moved}`);
+      console.log('     The version is unchanged, so the changelog has no entry for these commits yet.');
+    } else if (compareVersions(after.version, before.version) > 0) {
+      console.log(`\n  ✓  Updated ${moved}`);
 
       // Only meaningful moving forwards — the changelog of an older release
       // cannot describe what changed since a newer one.
       const changelogPath = join(packageDir, 'changelog.md');
       if (existsSync(changelogPath)) {
-        const entries = changelogSince(await Bun.file(changelogPath).text(), before);
+        const entries = changelogSince(await Bun.file(changelogPath).text(), before.version);
         if (entries) console.log(`\nChanges in this upgrade:\n\n${entries}`);
       }
     } else {
-      console.log(`\n  ✓  Downgraded gyoza ${before} -> ${after}`);
-      if (declaration.ref) console.log(`     The spec targets "${declaration.ref}", which resolves to ${after}.`);
+      console.log(`\n  ✓  Downgraded ${moved}`);
+      if (declaration.ref) console.log(`     The spec targets "${declaration.ref}", which resolves to ${after.version}.`);
     }
 
     console.log('\nThe new version applies to your next gyoza invocation.');

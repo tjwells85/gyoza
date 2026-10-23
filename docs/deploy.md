@@ -40,6 +40,8 @@ it from.
    here, so every later step uses the new values (a renamed `deploy.service`,
    new build steps, …).
 3. **Install.** Runs `bun install` only if `bun.lock` is among the pulled changes.
+   If that install changed gyoza's own version, the rest of the deploy is handed
+   to the newly installed gyoza (see [Self-update during a deploy](#self-update-during-a-deploy)).
 4. **Migrate.** Runs `deploy.migrate` (see below).
 5. **Build.** Runs `gyoza build` in-process. A build failure stops the deploy here,
    so the **old service keeps running**.
@@ -127,6 +129,39 @@ deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart app.service
 
 ---
 
+## Self-update during a deploy
+
+When you `gyoza upgrade` locally and commit the new `bun.lock`, the server's
+deploy installs that newer gyoza partway through. The process doing the
+deploy is still the old gyoza, though, and it would run migrate, build and
+restart with old code.
+
+So after `bun install`, `gyoza deploy` checks whether its own install changed.
+It compares the commit in bun's `.bun-tag` file, or the `version` if that file
+is missing. If the install changed, it starts the new
+`node_modules/gyoza/cli.ts` with the pulled range (`<from>..<to>`) and `--yes`,
+if you passed it. It then exits with that process's exit code. The new process
+picks up at **Migrate**, with a fresh config load. The pull, the install and
+the no-restart confirmation already happened, so it doesn't repeat them.
+
+```text
+📦  bun.lock changed — running bun install...
+🔁  bun install moved gyoza 0.12.0 (03d9105) → 0.13.0 (6b836bc) — handing the deploy to the new version...
+🔁  Resuming deploy in gyoza 0.13.0 (6b836bc)...
+🗄  Running migrations (bun run db:migrate)...
+```
+
+- A git install (`github:…`) is compared by commit, so a commit without a
+  version bump still hands off. `.bun-tag` is an undocumented bun file. If it's
+  missing, or for a non-git install, detection falls back to `version`, and an
+  unbumped change doesn't hand off.
+- A downgrade to a release older than 0.12.0 can't take a handoff. That deploy
+  finishes in the running version and prints a warning.
+- The deploy that first installs 0.12.0 is still run by the older gyoza, which
+  has no handoff. Handoffs start with the deploy after that.
+
+---
+
 ## Flags
 
 | Flag | Effect |
@@ -154,7 +189,8 @@ deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart app.service
 
 ## Notes
 
-Runs against `process.cwd()`, like everything except `gyoza upgrade`.
+Runs against `process.cwd()`, like everything except `gyoza upgrade`. The one
+exception is the self-update check, which reads gyoza's own install location.
 
 A failed deploy is **not** rolled back — the pull stays applied. Re-run
 `gyoza deploy` once the cause is fixed; the pull step is a no-op the second time

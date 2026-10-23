@@ -1,10 +1,14 @@
+import { join } from 'node:path';
 import type { PackageJson } from 'type-fest';
 import { loadConfig, validateDeployConfig } from '../config.ts';
 import type { DeployConfig, DeployMigrateContext } from '../config.ts';
 import type { CommandFlag } from '../gyoza.ts';
 import { confirm } from '../prompt.ts';
+import { compareVersions } from '../version.ts';
 import { readPackageJson, rootPackagePath } from '../workspaces.ts';
 import { runBuild } from './build.ts';
+import { describeInstall, gyozaPackageDir, installChanged, readGyozaInstall } from './upgrade.ts';
+import type { GyozaInstall } from './upgrade.ts';
 
 export const description = 'Pull, install, migrate, build, and restart the service';
 
@@ -20,18 +24,43 @@ export const flags: CommandFlag[] = [
 
 const BOOLEAN_FLAGS = new Set(['--dry', '-y', '--yes', '--force']);
 
+/**
+ * Internal, unlisted flag: a pre-install gyoza hands the deploy to the gyoza that
+ * `bun install` just put in place. This is a contract between gyoza versions —
+ * never rename or reshape it.
+ */
+export const RESUME_FLAG = '--resume-after-install';
+
+/** First release that understands {@link RESUME_FLAG}. Handing off to anything older would fail on the flag. */
+export const RESUME_SINCE = '0.12.0';
+
+const SHA = /^[0-9a-f]{7,40}$/;
+
 export interface DeployArgs {
   dry: boolean;
   yes: boolean;
   force: boolean;
+  /** Set only by a handoff — the pull and install already ran between these refs. */
+  resume?: { fromRef: string; toRef: string };
 }
+
+export const resumeArg = (fromRef: string, toRef: string): string => `${RESUME_FLAG}=${fromRef}..${toRef}`;
 
 export const parseDeployArgs = (args: string[]): DeployArgs => {
   let dry = false;
   let yes = false;
   let force = false;
+  let resume: DeployArgs['resume'];
 
   for (const arg of args) {
+    if (arg.startsWith(`${RESUME_FLAG}=`)) {
+      const [fromRef = '', toRef = '', ...rest] = arg.slice(RESUME_FLAG.length + 1).split('..');
+      if (rest.length > 0 || !SHA.test(fromRef) || !SHA.test(toRef)) {
+        throw new Error(`${RESUME_FLAG} expects <from-sha>..<to-sha>, got "${arg}".`);
+      }
+      resume = { fromRef, toRef };
+      continue;
+    }
     if (!BOOLEAN_FLAGS.has(arg)) {
       throw new Error(`"${arg}" is not a recognized flag for gyoza deploy.\n  Supported: --dry, -y/--yes, --force`);
     }
@@ -40,7 +69,16 @@ export const parseDeployArgs = (args: string[]): DeployArgs => {
     else yes = true;
   }
 
-  return { dry, yes, force };
+  return resume ? { dry, yes, force, resume } : { dry, yes, force };
+};
+
+/**
+ * Should the deploy hand off to the gyoza `bun install` just installed? Only if
+ * the install changed, and only to a release that understands {@link RESUME_FLAG}.
+ */
+export const handoffDecision = (before: GyozaInstall, after: GyozaInstall): 'none' | 'handoff' | 'too-old' => {
+  if (!installChanged(before, after) || after.version === undefined) return 'none';
+  return compareVersions(after.version, RESUME_SINCE) >= 0 ? 'handoff' : 'too-old';
 };
 
 export interface DetectedChanges {
@@ -207,11 +245,59 @@ const confirmNoService = async (yes: boolean): Promise<void> => {
 // Command
 // ---------------------------------------------------------------------------
 
+const diffRefs = async (
+  cwd: string,
+  fromRef: string,
+  toRef: string,
+): Promise<{ changes: DetectedChanges; changedFiles: string[] }> => {
+  const diffOut = (await capture(['git', 'diff', '--name-only', fromRef, toRef], cwd)).stdout;
+  return {
+    changes: detectChanges(diffOut),
+    changedFiles: diffOut.split('\n').map((line) => line.trim()).filter(Boolean),
+  };
+};
+
+/** Migrate → build → restart. Shared by a normal deploy and a post-install handoff. */
+const finishDeploy = async (
+  cwd: string,
+  deploy: DeployConfig,
+  branch: string,
+  diff: { changes: DetectedChanges; changedFiles: string[] },
+  before: string,
+  after: string,
+  yes: boolean,
+): Promise<void> => {
+  await runMigrate(
+    cwd,
+    deploy.migrate,
+    diff.changes,
+    { projectRoot: cwd, changedFiles: diff.changedFiles, fromRef: before, toRef: after },
+    yes,
+  );
+
+  console.log('\n🏗  Building...');
+  await runBuild([]);
+
+  if (deploy.service !== undefined) {
+    const units = normalizeServices(deploy.service);
+    console.log(`\n♻  Restarting ${units.join(', ')}...`);
+    const code = await stream(['sudo', 'systemctl', 'restart', ...units], cwd);
+    if (code !== 0) {
+      fail(
+        `sudo systemctl restart ${units.join(' ')} failed (exit ${code}).\n` +
+          '  The deploy user needs a NOPASSWD sudoers entry for this unit, or run gyoza deploy as root.',
+      );
+    }
+  }
+
+  console.log(`\n✅  Deployed ${branch}  ${before.slice(0, 7)} → ${after.slice(0, 7)}`);
+};
+
 const runDeploy = async (args: string[]): Promise<void> => {
   const cwd = process.cwd();
 
   try {
-    const { dry, yes, force } = parseDeployArgs(args);
+    const { dry, yes, force, resume } = parseDeployArgs(args);
 
     let deploy = await loadDeployConfig(cwd);
 
@@ -227,6 +313,15 @@ const runDeploy = async (args: string[]): Promise<void> => {
     const branchOut = await capture(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
     if (branchOut.exitCode !== 0) fail('Could not determine the current branch.');
     const branch = currentBranch(branchOut.stdout);
+
+    // Handed off by the previous gyoza after bun install replaced it. The pull,
+    // install, and no-service confirmation already happened in that process.
+    if (resume) {
+      console.log(`\n🔁  Resuming deploy in gyoza ${describeInstall(readGyozaInstall(gyozaPackageDir()))}...`);
+      const diff = await diffRefs(cwd, resume.fromRef, resume.toRef);
+      await finishDeploy(cwd, deploy, branch, diff, resume.fromRef, resume.toRef, yes);
+      return;
+    }
 
     if (dry) {
       await printDryPlan(cwd, branch, deploy);
@@ -254,9 +349,8 @@ const runDeploy = async (args: string[]): Promise<void> => {
     }
 
     const after = (await capture(['git', 'rev-parse', 'HEAD'], cwd)).stdout.trim();
-    const diffOut = (await capture(['git', 'diff', '--name-only', before, after], cwd)).stdout;
-    const changes = detectChanges(diffOut);
-    const changedFiles = diffOut.split('\n').map((line) => line.trim()).filter(Boolean);
+    const diff = await diffRefs(cwd, before, after);
+    const { changes } = diff;
 
     if (before === after && !force) {
       console.log('\n✓  Already up to date — nothing to deploy. (use --force to rebuild and restart)');
@@ -273,37 +367,36 @@ const runDeploy = async (args: string[]): Promise<void> => {
     }
 
     if (changes.lockChanged) {
+      // The running gyoza's own package — not cwd — since the question is whether
+      // this install is about to replace the code doing the deploy.
+      const packageDir = gyozaPackageDir();
+      const gyozaBefore = readGyozaInstall(packageDir);
+
       console.log('\n📦  bun.lock changed — running bun install...');
       const code = await stream(['bun', 'install'], cwd);
       if (code !== 0) fail(`bun install failed (exit ${code}).`);
+
+      // Everything past the install must run in the gyoza it installed.
+      const gyozaAfter = readGyozaInstall(packageDir);
+      const decision = handoffDecision(gyozaBefore, gyozaAfter);
+      const moved = `gyoza ${describeInstall(gyozaBefore)} → ${describeInstall(gyozaAfter)}`;
+
+      if (decision === 'handoff') {
+        console.log(`\n🔁  bun install moved ${moved} — handing the deploy to the new version...`);
+        const handoffArgs = [resumeArg(before, after), ...(yes ? ['--yes'] : [])];
+        process.exit(await stream(['bun', join(packageDir, 'cli.ts'), 'deploy', ...handoffArgs], cwd));
+      }
+      if (decision === 'too-old') {
+        console.log(
+          `\n⚠  bun install moved ${moved}, which predates deploy handoff (${RESUME_SINCE}).\n` +
+            `   Finishing this deploy in gyoza ${describeInstall(gyozaBefore)}.`,
+        );
+      }
     } else {
       console.log('\n·  bun.lock unchanged — skipping bun install.');
     }
 
-    await runMigrate(
-      cwd,
-      deploy.migrate,
-      changes,
-      { projectRoot: cwd, changedFiles, fromRef: before, toRef: after },
-      yes,
-    );
-
-    console.log('\n🏗  Building...');
-    await runBuild([]);
-
-    if (deploy.service !== undefined) {
-      const units = normalizeServices(deploy.service);
-      console.log(`\n♻  Restarting ${units.join(', ')}...`);
-      const code = await stream(['sudo', 'systemctl', 'restart', ...units], cwd);
-      if (code !== 0) {
-        fail(
-          `sudo systemctl restart ${units.join(' ')} failed (exit ${code}).\n` +
-            '  The deploy user needs a NOPASSWD sudoers entry for this unit, or run gyoza deploy as root.',
-        );
-      }
-    }
-
-    console.log(`\n✅  Deployed ${branch}  ${before.slice(0, 7)} → ${after.slice(0, 7)}`);
+    await finishDeploy(cwd, deploy, branch, diff, before, after, yes);
   } catch (err) {
     console.error(`\n  ✗  ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);

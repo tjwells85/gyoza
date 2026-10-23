@@ -2,7 +2,13 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { changelogSince, findDeclaration } from '../src/commands/upgrade.ts';
+import {
+  changelogSince,
+  describeInstall,
+  findDeclaration,
+  installChanged,
+  parseBunTag,
+} from '../src/commands/upgrade.ts';
 import { compareVersions } from '../src/version.ts';
 
 let cwd: string;
@@ -68,6 +74,50 @@ describe('findDeclaration', () => {
   test('leaves ref undefined when the spec has none', () => {
     makeFixture({ devDependencies: { gyoza: 'github:tjwells85/gyoza' } });
     expect(findDeclaration(cwd)?.ref).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseBunTag
+// ---------------------------------------------------------------------------
+
+describe('parseBunTag', () => {
+  test('takes the commit off the end of a git install tag', () => {
+    expect(parseBunTag('tjwells85-gyoza-33be27e')).toBe('33be27e');
+    expect(parseBunTag('tjwells85-gyoza-03d9105\n')).toBe('03d9105');
+  });
+
+  test('anything else is undefined', () => {
+    expect(parseBunTag('')).toBeUndefined();
+    expect(parseBunTag('tjwells85-gyoza')).toBeUndefined();
+    expect(parseBunTag('tjwells85-gyoza-v0.12.0')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// installChanged / describeInstall
+// ---------------------------------------------------------------------------
+
+describe('installChanged', () => {
+  test('a new commit counts even when the version did not move', () => {
+    expect(installChanged({ version: '0.12.0', commit: '03d9105' }, { version: '0.12.0', commit: '6b836bc' })).toBe(true);
+  });
+
+  test('the same commit is unchanged', () => {
+    expect(installChanged({ version: '0.12.0', commit: '03d9105' }, { version: '0.12.0', commit: '03d9105' })).toBe(false);
+  });
+
+  test('falls back to the version when either side has no commit', () => {
+    expect(installChanged({ version: '0.12.0' }, { version: '0.12.0', commit: '03d9105' })).toBe(false);
+    expect(installChanged({ version: '0.12.0', commit: '03d9105' }, { version: '0.13.0' })).toBe(true);
+  });
+});
+
+describe('describeInstall', () => {
+  test('shows the short commit when known', () => {
+    expect(describeInstall({ version: '0.12.0', commit: '03d9105abcdef' })).toBe('0.12.0 (03d9105)');
+    expect(describeInstall({ version: '0.12.0' })).toBe('0.12.0');
+    expect(describeInstall({})).toBe('(unknown version)');
   });
 });
 

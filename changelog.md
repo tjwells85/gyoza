@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.12.0] - 2026-10-23
+
+### Added
+
+- `gyoza deploy` now hands off to the new gyoza when the pulled `bun.lock`
+  updates gyoza itself. Before, migrate, build and restart ran in the old gyoza
+  that started the deploy
+  - Detection compares gyoza's install before and after `bun install`. A git
+    install is compared by commit, so a change without a version bump still
+    counts. Otherwise the version is compared. If the install changed, the new
+    `cli.ts` takes over at the migrate step. The pull, the install and the no-restart confirmation are not
+    repeated, and `-y` is passed along
+  - Your first deploy that installs this release won't hand off, because the
+    gyoza running it is older. Handoffs start with the following deploy
+  - A downgrade to a release older than 0.12.0 doesn't hand off. That deploy
+    finishes in the running version and prints a warning
+
+### Fixed
+
+- `gyoza upgrade` said "Already up to date" when it had installed a new commit
+  that didn't bump the version. It now compares the installed commit (from
+  bun's `.bun-tag`) and reports the update, without a changelog section. Every
+  report line now shows the commit next to the version, e.g.
+  `0.12.0 (03d9105)`
+
 ## [0.11.2] - 2026-10-23
 
 ### Fixed

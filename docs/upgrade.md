@@ -39,20 +39,21 @@ actually do the job.
 
 1. Finds the `package.json` that declares gyoza — the root first, then each
    workspace. `bun update` runs from whichever directory owns the dependency.
-2. Records the installed version from the gyoza package directory.
+2. Records the installed version, and the commit from bun's `.bun-tag` file in
+   the gyoza package directory.
 3. Runs `bun update gyoza`.
-4. Reports the version change and, when moving forward, prints the changelog
+4. Reports the change and, when moving forward, prints the changelog
    entries between the two versions.
 
 ```text
 $ gyoza upgrade
-Current: gyoza 0.4.1
+Current: gyoza 0.4.1 (1a2b3c4)
 Updating from github:tjwells85/gyoza...
 
 installed gyoza@github:tjwells85/gyoza#61cd181 with binaries:
  - gyoza
 
-  ✓  Updated gyoza 0.4.1 -> 0.5.0
+  ✓  Updated gyoza 0.4.1 (1a2b3c4) -> 0.5.0 (61cd181)
 
 Changes in this upgrade:
 
@@ -68,6 +69,18 @@ The new version applies to your next gyoza invocation.
 The changelog section is why this is worth more than typing `bun update gyoza`:
 it tells you immediately whether the upgrade changes behavior you should re-run.
 
+Up-to-date is decided by commit. A new commit that didn't bump the version is
+still reported as an update, with no changelog section, since the changelog
+only has entries for released versions:
+
+```text
+  ✓  Updated gyoza 0.5.0 (61cd181) -> 0.5.0 (9f8e7d6)
+     The version is unchanged, so the changelog has no entry for these commits yet.
+```
+
+`.bun-tag` is an undocumented bun file. If it's missing, gyoza compares
+versions only.
+
 ---
 
 ## Specs with an explicit ref
@@ -78,14 +91,14 @@ from a tag without querying the remote. Rather than guess, gyoza says so and
 reports what actually happened:
 
 ```text
-Current: gyoza 0.5.0
+Current: gyoza 0.5.0 (61cd181)
   ⚠ The spec targets "v0.4.1" — a branch will move, a tag or commit will not.
 ```
 
 A branch tracks and moves normally. A tag or commit does not, and you get:
 
 ```text
-  ✓  Already up to date (gyoza 0.5.0).
+  ✓  Already up to date (gyoza 0.5.0 (61cd181)).
      If "v0.4.1" is a tag or commit, bun update cannot move it — edit the spec in <dir>/package.json.
 ```
 
@@ -94,7 +107,7 @@ reported as one. The changelog is suppressed in that direction — an older
 release's changelog cannot describe what changed since a newer one.
 
 ```text
-  ✓  Downgraded gyoza 0.5.0 -> 0.4.1
+  ✓  Downgraded gyoza 0.5.0 (61cd181) -> 0.4.1 (1a2b3c4)
      The spec targets "v0.4.1", which resolves to 0.4.1.
 ```
 

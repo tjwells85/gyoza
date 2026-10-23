@@ -521,6 +521,8 @@ Before considering the initial implementation complete:
 - [ ] `gyoza upgrade` from a project with a stale gyoza reports `old -> new` and
       prints the changelog entries between them
 - [ ] `gyoza upgrade` when already current prints "Already up to date"
+- [ ] `gyoza upgrade` to a new commit with the same version reports `Updated`
+      with both commits and no changelog section
 - [ ] `gyoza upgrade` with a `#tag` spec warns about the ref and reports a
       downgrade as a downgrade, with no changelog section
 - [ ] `gyoza upgrade` from a project that doesn't declare gyoza exits 1 with a
@@ -557,6 +559,8 @@ Before considering the initial implementation complete:
 - [ ] an unknown flag to `gyoza deploy` exits 1 listing the supported flags
 - [ ] a pull that renames `deploy.service` in `gyoza.config.ts` restarts the new
       unit, not the old one
+- [ ] a pull whose `bun.lock` moves gyoza to a new version prints the handoff line,
+      and migrate/build/restart run in the new gyoza; `-y` is carried over
 - [ ] `gyoza generate env` with a stub `vite.config.ts` + `rsbuild.config.ts` and only
       `@rsbuild/core` declared checks against `PUBLIC_` with no prompt
 - [ ] both configs + both packages declared prompts to choose in a TTY; without a TTY
@@ -907,9 +911,16 @@ primitive this command wraps.
 - **This is the one command that resolves against its own install location**
   (`import.meta.dir`) rather than `process.cwd()`. It is updating itself, not the
   project. Everything else must keep following the `process.cwd()` rule.
-- The before/after versions are read from the gyoza package directory on either
-  side of the `bun update` call. **Do not parse `bun.lock`** — it is JSONC with no
-  public parser, and reading `package.json` twice gives the same answer reliably.
+- The before/after state is read from the gyoza package directory on either side
+  of the `bun update` call: the `package.json` version, and the commit from bun's
+  `.bun-tag` file (`readGyozaInstall`). **Do not parse `bun.lock`** — it is JSONC
+  with no public parser, and reading the package directory twice gives the same
+  answer reliably.
+- `installChanged` decides "up to date" by commit when both sides have one, and
+  by version otherwise, so an unbumped commit still counts as an update. On the
+  same version there is no changelog section to print, and the direction can't
+  be known, so it's reported as "Updated" with a note. `deploy`'s handoff check
+  uses the same helper.
 - `bun update` runs from whichever directory declares gyoza (root first, then
   workspaces), because that is the package.json bun will rewrite.
 
@@ -994,6 +1005,34 @@ file on disk; unchanged content reuses the cached module. When the pulled diff
 contains the root `gyoza.config.ts`, `runDeploy` reloads and re-validates the
 `deploy` block, and re-prompts only if the pull *removed* `deploy.service`. Modules
 the config imports are not re-evaluated — documented, not fixed.
+
+### Self-update handoff after install
+
+A pulled `bun.lock` can carry a new gyoza, and `bun install` replaces it under
+the running process. The rest of the deploy would then run the stale code, which
+is the same problem as the stale config. So `runDeploy` reads gyoza's own
+install (`gyozaPackageDir()`, exported from `upgrade.ts`) before and after the
+install: the commit from bun's `.bun-tag` (`tjwells85-gyoza-03d9105`, via
+`readGyozaCommit`) and the `package.json` version. If it moved, `runDeploy` spawns
+`bun <packageDir>/cli.ts deploy --resume-after-install=<from>..<to> [--yes]`
+and exits with the child's code. The resumed run skips the preflight, pull,
+install and `confirmNoService` (all done in the parent) and goes straight to
+`finishDeploy` (migrate → build → restart). This is the second place gyoza
+resolves against `import.meta.dir`, and it only asks whether gyoza replaced
+itself.
+
+- **`RESUME_FLAG` is a cross-version contract**: an old parent hands off to a
+  new child. Never rename it or change its shape. It is left out of `flags` and
+  out of the unknown-flag error on purpose.
+- `RESUME_SINCE` is the first version that understands the flag.
+  `handoffDecision` won't hand off to anything older (a downgrade). That deploy
+  finishes in-process with a warning instead.
+- `handoffDecision` compares commits when both sides have one, and versions
+  otherwise. `.bun-tag` is undocumented bun internals, which is why it falls back
+  instead of failing. Read the commit from the installed package, **not**
+  `bun.lock`: the lockfile isn't parsed (see `gyoza upgrade`), and it records
+  what should be installed rather than whether the running code was replaced.
+- The `RESUME_SINCE` gate is always by version, because a commit can't be ordered.
 
 ### Failure leaves the old service running
 

@@ -8,8 +8,12 @@ import type { GyozaConfig } from '../src/config.ts';
 import {
   currentBranch,
   detectChanges,
+  handoffDecision,
   normalizeServices,
   parseDeployArgs,
+  RESUME_FLAG,
+  RESUME_SINCE,
+  resumeArg,
   runDeploy,
 } from '../src/commands/deploy.ts';
 
@@ -32,6 +36,64 @@ describe('parseDeployArgs', () => {
   test('throws on an unknown flag, naming the supported ones', () => {
     expect(() => parseDeployArgs(['--skip-build'])).toThrow(/not a recognized flag/);
     expect(() => parseDeployArgs(['--skip-build'])).toThrow(/--dry, -y\/--yes, --force/);
+  });
+
+  test('round-trips the handoff flag alongside --yes', () => {
+    const from = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+    const to = 'e4f5a6b';
+    expect(parseDeployArgs([resumeArg(from, to), '--yes'])).toEqual({
+      dry: false,
+      yes: true,
+      force: false,
+      resume: { fromRef: from, toRef: to },
+    });
+  });
+
+  test('rejects a malformed handoff range', () => {
+    expect(() => parseDeployArgs([`${RESUME_FLAG}=a1b2c3d`])).toThrow(/expects <from-sha>\.\.<to-sha>/);
+    expect(() => parseDeployArgs([`${RESUME_FLAG}=HEAD..e4f5a6b`])).toThrow(/expects/);
+    expect(() => parseDeployArgs([`${RESUME_FLAG}=a1b2c3d..e4f5a6b..f00ba44`])).toThrow(/expects/);
+  });
+
+  test('the bare handoff flag is not recognized', () => {
+    expect(() => parseDeployArgs([RESUME_FLAG])).toThrow(/not a recognized flag/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handoffDecision
+// ---------------------------------------------------------------------------
+
+describe('handoffDecision', () => {
+  test('a commit change hands off even when the version did not move', () => {
+    expect(handoffDecision({ version: '0.12.0', commit: '03d9105' }, { version: '0.12.0', commit: '6b836bc' })).toBe(
+      'handoff',
+    );
+  });
+
+  test('the same commit is no handoff', () => {
+    expect(handoffDecision({ version: '0.12.0', commit: '03d9105' }, { version: '0.12.0', commit: '03d9105' })).toBe(
+      'none',
+    );
+  });
+
+  test('falls back to the version when either side has no commit', () => {
+    expect(handoffDecision({ version: '0.12.0' }, { version: '0.12.0', commit: '03d9105' })).toBe('none');
+    expect(handoffDecision({ version: '0.12.0', commit: '03d9105' }, { version: '0.13.0' })).toBe('handoff');
+  });
+
+  test('no handoff when the new version cannot be read', () => {
+    expect(handoffDecision({ version: '0.12.0', commit: '03d9105' }, { commit: '6b836bc' })).toBe('none');
+  });
+
+  test('hands off to a downgrade that still understands the flag', () => {
+    expect(handoffDecision({ version: '0.13.0' }, { version: RESUME_SINCE })).toBe('handoff');
+  });
+
+  test('refuses to hand off to a release that predates the flag', () => {
+    expect(handoffDecision({ version: '0.12.0', commit: '03d9105' }, { version: '0.11.2', commit: '6b836bc' })).toBe(
+      'too-old',
+    );
   });
 });
 
