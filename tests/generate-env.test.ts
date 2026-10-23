@@ -270,6 +270,97 @@ describe('renderEnv', () => {
   });
 });
 
+// Regression for issue #1, verbatim from the report: the trailing `// Frontend Origin for CORS`
+// on ORIGIN meant its line never ended in a comma, so DATABASE_URL was swallowed into it.
+const ISSUE_1_SERVER_ENV_TS = `
+import * as z from 'zod';
+
+// Define environment variables here
+export const ServerEnv = z.object({
+  // Server Configuration
+  PORT: z.coerce.number().int().positive().default(3000),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  SHOW_ROUTES: z.stringbool().default(false),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  ORIGIN: z.url().default('http://localhost:5000'), // Frontend Origin for CORS
+
+  // Database Configuration
+  DATABASE_URL: z.url(),
+
+  // Authentication (better-auth)
+  BETTER_AUTH_SECRET: z.string().trim().min(32),
+  BETTER_AUTH_URL: z.url(),
+  PASSKEY_RP_ID: z.string().trim().nonempty(),
+  PASSKEY_ORIGIN: z.url(),
+
+  // File System Paths (absolute paths)
+  STAGING_FOLDER_PATH: z.string().trim().nonempty(),
+  STAGING_CLUTTER_FOLDER_PATH: z.string().trim().nonempty(),
+  LIBRARY_FOLDER_PATH: z.string().trim().nonempty(),
+  DUPLICATE_FOLDER_PATH: z.string().trim().nonempty(),
+  ARTWORK_FOLDER_PATH: z.string().trim().nonempty(),
+  RECYCLE_BIN_FOLDER_PATH: z.string().trim().nonempty(),
+  RECYCLE_BIN_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
+  // Optional read-only source (e.g. audiobookshelf podcasts) - new episodes are copied into staging
+  PODCAST_FOLDER_PATH: z.string().trim().nonempty().optional(),
+
+  // Scanning & Processing
+  SCAN_CRON_SCHEDULE: z.string().trim().default('0 * * * *'),
+  SCAN_AUTO_ENABLED: z.stringbool().default(true),
+});
+export type ServerEnv = z.infer<typeof ServerEnv>;
+
+export const ProcessEnv = ServerEnv.parse(process.env);
+
+declare module 'bun' {
+  interface Env extends ServerEnv {
+    [key: string]: string | undefined;
+  }
+}
+`;
+
+describe('parseEnvTs (trailing comments, issue #1)', () => {
+  const fields = parseEnvTs(ISSUE_1_SERVER_ENV_TS);
+
+  test('a trailing // comment does not swallow the fields after it', () => {
+    expect(fields.filter((f) => f.kind === 'field').map((f) => f.name)).toEqual([
+      'PORT',
+      'NODE_ENV',
+      'SHOW_ROUTES',
+      'LOG_LEVEL',
+      'ORIGIN',
+      'DATABASE_URL',
+      'BETTER_AUTH_SECRET',
+      'BETTER_AUTH_URL',
+      'PASSKEY_RP_ID',
+      'PASSKEY_ORIGIN',
+      'STAGING_FOLDER_PATH',
+      'STAGING_CLUTTER_FOLDER_PATH',
+      'LIBRARY_FOLDER_PATH',
+      'DUPLICATE_FOLDER_PATH',
+      'ARTWORK_FOLDER_PATH',
+      'RECYCLE_BIN_FOLDER_PATH',
+      'RECYCLE_BIN_RETENTION_DAYS',
+      'PODCAST_FOLDER_PATH',
+      'SCAN_CRON_SCHEDULE',
+      'SCAN_AUTO_ENABLED',
+    ]);
+  });
+
+  test('the trailing comment becomes a field comment; the "//" inside the default string is not a comment', () => {
+    const origin = fields.find((f) => f.kind === 'field' && f.name === 'ORIGIN');
+    if (origin?.kind !== 'field') throw new Error('expected field');
+    expect(origin.defaultValue).toBe('http://localhost:5000');
+    expect(origin.comments).toEqual(['Frontend Origin for CORS']);
+  });
+
+  test('an existing DATABASE_URL value survives regeneration', () => {
+    const output = renderEnv(fields, { DATABASE_URL: 'postgresql://real:secret@db:5432/app' });
+    expect(output).toContain('DATABASE_URL=postgresql://real:secret@db:5432/app');
+    expect(validateGeneratedEnv(fields, output)).toEqual([]);
+  });
+});
+
 describe('parseEnvFile', () => {
   test('parses KEY=VALUE lines, ignoring blanks, comments, and malformed lines', () => {
     const path = `/tmp/gyoza-test-envfile-${Date.now()}.env`;
@@ -423,6 +514,26 @@ describe('parseFrontendEnvTs', () => {
     const sectionIdx = fields.findIndex((f) => f.kind === 'section');
     expect(sectionIdx).toBeGreaterThan(-1);
     expect(fields[sectionIdx + 1]?.kind).toBe('field');
+  });
+
+  test('a field with a trailing // comment is still parsed, and the comment survives readonly/prefix fixes', () => {
+    const src = `
+interface ImportMetaEnv {
+  VITE_API_URL: string; // Backend base URL, e.g. http://localhost:3000
+  readonly VITE_NAME: string;
+}
+`;
+    const readonlyFixed = correctFrontendEnvReadonly(src);
+    expect(readonlyFixed).toContain('readonly VITE_API_URL: string; // Backend base URL, e.g. http://localhost:3000');
+
+    const { corrected } = correctFrontendEnvPrefix(readonlyFixed, 'rsbuild');
+    expect(corrected).toContain('readonly PUBLIC_API_URL: string; // Backend base URL, e.g. http://localhost:3000');
+
+    const parsed = parseFrontendEnvTs(readonlyFixed);
+    expect(parsed.filter((f) => f.kind === 'field').map((f) => f.name)).toEqual(['VITE_API_URL', 'VITE_NAME']);
+    const apiUrl = parsed.find((f) => f.kind === 'field' && f.name === 'VITE_API_URL');
+    if (apiUrl?.kind !== 'field') throw new Error('expected field');
+    expect(apiUrl.comments).toEqual(['Backend base URL, e.g. http://localhost:3000']);
   });
 });
 

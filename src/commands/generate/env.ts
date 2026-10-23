@@ -138,6 +138,26 @@ const extractDefault = (fieldLine: string): string | undefined => {
   return match ? match[2] : undefined;
 };
 
+/**
+ * Splits a line into `[code, comment]` at the first `//` outside a string literal, so a
+ * `.default('http://…')` isn't cut short. `comment` keeps its `//` and is `''` when absent.
+ */
+const splitLineComment = (line: string): [string, string] => {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+    } else if (ch === '/' && line[i + 1] === '/') {
+      return [line.slice(0, i), line.slice(i)];
+    }
+  }
+  return [line, ''];
+};
+
 export const parseEnvTs = (src: string): EnvField[] => {
   const lines = src.split('\n');
   const fields: EnvField[] = [];
@@ -151,8 +171,9 @@ export const parseEnvTs = (src: string): EnvField[] => {
       let braceDepth = 1;
 
       for (let j = i + 1; j < lines.length; j++) {
-        const openCount = (lines[j].match(/{/g) || []).length;
-        const closeCount = (lines[j].match(/}/g) || []).length;
+        const [code] = splitLineComment(lines[j]);
+        const openCount = (code.match(/{/g) || []).length;
+        const closeCount = (code.match(/}/g) || []).length;
         braceDepth += openCount - closeCount;
 
         if (braceDepth === 0) {
@@ -216,22 +237,32 @@ export const parseEnvTs = (src: string): EnvField[] => {
 
     if (trimmed.match(/^\w+:\s*z\b/)) {
       const fieldName = trimmed.split(':')[0];
-      const fieldLines: string[] = [line];
+      const fieldLines: string[] = [];
 
       const depthDelta = (s: string): number => (s.match(/[({]/g) || []).length - (s.match(/[)}]/g) || []).length;
 
-      let depth = depthDelta(line);
-      let complete = depth === 0 && /,\s*$/.test(trimmed);
+      let depth = 0;
+      let complete = false;
+
+      // Trailing `// …` comments are split off first: left in place, `KEY: z.url(), // note`
+      // never ends in a comma and would swallow every following field up to the next one that does.
+      const consume = (raw: string): void => {
+        const [code, comment] = splitLineComment(raw);
+        fieldLines.push(code);
+        const commentText = comment.slice(2).trim();
+        if (commentText) (commentText.startsWith('@') ? directiveBuffer : commentBuffer).push(commentText);
+        depth += depthDelta(code);
+        complete = depth === 0 && /,\s*$/.test(code);
+      };
+
+      consume(line);
 
       // Prettier can wrap long chains onto multiple lines (e.g. `KEY: z\n  .string()...`).
       // Keep consuming lines until the bracket depth returns to zero at a trailing comma,
       // so multi-line field definitions aren't dropped or truncated.
       while (!complete && i + 1 < objectLines.length) {
         i++;
-        const nextLine = objectLines[i];
-        fieldLines.push(nextLine);
-        depth += depthDelta(nextLine);
-        complete = depth === 0 && /,\s*$/.test(nextLine.trim());
+        consume(objectLines[i]);
       }
 
       const defaultValue = extractDefault(fieldLines.join('\n'));
@@ -429,10 +460,14 @@ export const parseFrontendEnvTs = (src: string): EnvField[] => {
       continue;
     }
 
-    const fieldMatch = trimmed.match(/^(?:readonly\s+)?(\w+)(\?)?:\s*(.+);$/);
+    const [code, comment] = splitLineComment(trimmed);
+    const fieldMatch = code.trim().match(/^(?:readonly\s+)?(\w+)(\?)?:\s*(.+);$/);
     if (fieldMatch) {
       const fieldName = fieldMatch[1];
       const isOptional = !!fieldMatch[2] || fieldMatch[3].includes('undefined');
+
+      const commentText = comment.slice(2).trim();
+      if (commentText) (commentText.startsWith('@') ? directiveBuffer : commentBuffer).push(commentText);
 
       fields.push({
         kind: 'field',
@@ -458,10 +493,11 @@ export const correctFrontendEnvReadonly = (src: string): string => {
   if (!bounds) return src;
 
   for (let i = bounds.start + 1; i < bounds.end; i++) {
-    const trimmed = lines[i].trim();
+    const [code, comment] = splitLineComment(lines[i]);
+    const trimmed = code.trim();
     if (trimmed.match(/^(\w+)(\?)?:\s*(.+);$/) && !trimmed.startsWith('readonly')) {
       const indent = lines[i].match(/^(\s*)/)?.[1] || '';
-      lines[i] = `${indent}readonly ${trimmed}`;
+      lines[i] = `${indent}readonly ${trimmed}${comment ? ` ${comment}` : ''}`;
     }
   }
 
@@ -484,8 +520,8 @@ export const correctFrontendEnvPrefix = (src: string, tool: FrontendBuildTool): 
   const otherPrefix = BUILD_TOOL_EXPECTED_PREFIX[tool === 'vite' ? 'rsbuild' : 'vite'];
 
   for (let i = bounds.start + 1; i < bounds.end; i++) {
-    const trimmed = lines[i].trim();
-    const fieldMatch = trimmed.match(/^(readonly\s+)?(\w+)(\??):\s*(.+);$/);
+    const [code, comment] = splitLineComment(lines[i]);
+    const fieldMatch = code.trim().match(/^(readonly\s+)?(\w+)(\??):\s*(.+);$/);
     if (!fieldMatch) continue;
 
     const [, readonlyPart = '', name, optionalMark, rest] = fieldMatch;
@@ -493,7 +529,7 @@ export const correctFrontendEnvPrefix = (src: string, tool: FrontendBuildTool): 
 
     const newName = expectedPrefix + name.slice(otherPrefix.length);
     const indent = lines[i].match(/^(\s*)/)?.[1] ?? '';
-    lines[i] = `${indent}${readonlyPart}${newName}${optionalMark}: ${rest};`;
+    lines[i] = `${indent}${readonlyPart}${newName}${optionalMark}: ${rest};${comment ? ` ${comment}` : ''}`;
     renamed.push([name, newName]);
   }
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.2] - 2026-10-23
+
+### Fixed
+
+- `gyoza generate env` dropped fields that followed a field with a trailing
+  `//` comment in `server/env.ts` (e.g. `ORIGIN: z.url(), // CORS origin`).
+  The line no longer ended in a comma, so the parser treated the field as
+  wrapped and swallowed the next field into it — its existing `.env` value was
+  lost and validation never checked for it (#1)
+  - Trailing comments are now split off before parsing, ignoring `//` inside
+    string literals such as `.default('http://localhost:5000')`
+  - The comment text is kept and rendered as a `#` comment above the key
+- The same trailing comment made a `frontend/src/env.d.ts` field invisible to
+  the parser, the `readonly` auto-correct, and the prefix rename. All three
+  now handle it, and the rewrites keep the comment
+
 ## [0.11.1] - 2026-10-22
 
 ### Fixed
