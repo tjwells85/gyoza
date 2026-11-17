@@ -333,8 +333,8 @@ import type { KnownInitCommand, KnownGenerateCommand } from 'gyoza';
 
 ## `deploy` config
 
-Drives `gyoza deploy`. Both fields are optional; when one is missing, `gyoza deploy`
-prompts (and aborts in a non-interactive shell). See [gyoza deploy](deploy.md) for
+Drives `gyoza deploy`. Every field is optional. When `migrate` or `service` is
+missing, `gyoza deploy` prompts, and aborts in a non-interactive shell. See [gyoza deploy](deploy.md) for
 the full command.
 
 ```ts
@@ -361,6 +361,40 @@ export default defineConfig({
 | --- | --- | --- | --- |
 | `migrate` | `string` or `(ctx: DeployMigrateContext) => unknown` | none — prompts | DB migration step. A string is run as `bun run <name>`; a callback is awaited. Runs on every deploy |
 | `service` | `string` or `string[]` | none — prompts | systemd unit(s) restarted with `sudo systemctl restart`. Names without a `.` get `.service` appended; an array restarts all in one call |
+| `preflight` | `{ deps?, checks? }` | none | Required software and server-state checks. Runs after the pull and install, before migrate. See [Server preflight](deploy.md#server-preflight) |
+
+### `PreflightConfig`
+
+```ts
+interface PreflightConfig {
+  deps?: Record<string, PreflightDep>;
+  checks?: Record<string, PreflightCheck | PreflightCheckFn>;
+}
+
+// One source per dependency. `command` defaults to the key.
+type PreflightDep =
+  | { command?: string;   version?: VersionSpec; name?: string; onFail?: 'warn' | 'fail' }
+  | { pkgConfig: string;  version?: VersionSpec; name?: string; onFail?: 'warn' | 'fail' }
+  | { library: string;                           name?: string; onFail?: 'warn' | 'fail' }
+  | { exists: (ctx) => boolean | Promise<boolean>; version?: VersionSpec; name?: string; onFail?: 'warn' | 'fail' }
+  | { anyOf: Record<string, /* any of the above, without onFail */>; name?: string; onFail?: 'warn' | 'fail' };
+
+type VersionSpec =
+  | string                                         // semver range, e.g. '>=15'
+  | { range: string; probe?: string | string[]; match?: string | RegExp; get?: (ctx) => string | undefined };
+
+type PreflightCheckFn = (ctx: PreflightContext) => boolean | { ok: boolean; detail?: string } | Promise<…>;
+interface PreflightCheck { name?: string; run: PreflightCheckFn; onFail?: 'warn' | 'fail' }
+
+interface PreflightContext extends DeployMigrateContext {
+  services: string[];                              // normalized deploy.service units
+  exec: (cmd: string | string[], opts?: { timeoutMs?: number }) => Promise<ExecResult>;
+}
+```
+
+`onFail` defaults to `'fail'`. Built-in checks are exported as `check`:
+`check.mounted`, `check.freeSpace`, `check.portFree`, `check.serviceActive` and
+`check.commandSucceeds`.
 
 ### `DeployMigrateContext`
 
@@ -402,7 +436,7 @@ export default defineConfig({
 ## Full example
 
 ```ts
-import { defineConfig } from 'gyoza';
+import { check, defineConfig } from 'gyoza';
 
 export default defineConfig({
   build: {
@@ -432,6 +466,16 @@ export default defineConfig({
   deploy: {
     migrate: 'db:migrate',
     service: ['app', 'worker'],
+    preflight: {
+      deps: {
+        postgres: { command: 'psql', version: '>=15' },
+        cache: { anyOf: { redis: { command: 'redis-server' }, valkey: { command: 'valkey-server' } } },
+      },
+      checks: {
+        media: check.mounted('/mnt/media'),
+        space: { run: check.freeSpace('/mnt/media', '20GB'), onFail: 'warn' },
+      },
+    },
   },
   frontend: {
     buildTool: 'rsbuild',

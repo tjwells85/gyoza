@@ -51,6 +51,8 @@ gyoza/
     ├── catalog.ts          ← catalog-mode arg parsing, change application
     ├── bunfig.ts           ← bunfig.toml minimumReleaseAge policy
     ├── version.ts          ← bun info resolution, semver compare, release-age gate
+    ├── preflight.ts        ← deploy.preflight types, version probes, runner, validation
+    ├── checks.ts           ← built-in `check.*` preflight factories
     ├── prompt.ts           ← shared Y/n confirmation
     └── commands/
         ├── index.ts        ← registry root (assembles all groups)
@@ -96,6 +98,7 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 | `gyoza deploy`              | Pull, install, migrate, build, restart the systemd service  |
 | `gyoza deploy --dry`        | Print the deploy plan without changing anything             |
 | `gyoza deploy -y`           | Deploy without confirmation prompts                         |
+| `gyoza deploy --skip-preflight` | Deploy without running `deploy.preflight`               |
 | `gyoza help`                | Print available commands                                    |
 
 ### How it is consumed
@@ -561,6 +564,18 @@ Before considering the initial implementation complete:
       unit, not the old one
 - [ ] a pull whose `bun.lock` moves gyoza to a new version prints the handoff line,
       and migrate/build/restart run in the new gyoza; `-y` is carried over
+- [ ] `deploy.preflight` runs after `bun install` and before migrate; after a handoff
+      it runs once, in the new gyoza
+- [ ] a failing `onFail: 'fail'` preflight entry exits 1 after every entry has been
+      reported, before migrate; `'warn'` entries print and continue; `-y` changes nothing
+- [ ] `--skip-preflight` skips it with a warning and is forwarded on a handoff
+- [ ] `gyoza deploy --dry` runs the preflight, reports what would abort, exits 0
+- [ ] `{ anyOf: { redis, valkey } }` passes with only valkey installed and names it
+- [ ] an invalid range (`'garbage'`), two sources, or `library` + `version` aborts
+      before the pull
+- [ ] `check.portFree(<service port>)` passes while the service being deployed is up
+- [ ] `check.freeSpace` / `check.mounted` against a hung NFS share fail within the
+      timeout instead of hanging
 - [ ] `gyoza generate env` with a stub `vite.config.ts` + `rsbuild.config.ts` and only
       `@rsbuild/core` declared checks against `PUBLIC_` with no prompt
 - [ ] both configs + both packages declared prompts to choose in a TTY; without a TTY
@@ -954,9 +969,9 @@ Orchestrates a full deployment on the server. Full documentation in
 [docs/deploy.md](docs/deploy.md). Config lives under `deploy` in `gyoza.config.ts`
 ([docs/config.md](docs/config.md#deploy-config)).
 
-Sequence: preflight → `git pull --ff-only origin <branch>` → `bun install` (only if
-`bun.lock` moved in the pulled diff) → `deploy.migrate` → `runBuild([])` in-process
-→ `sudo systemctl restart <units>`.
+Sequence: git preflight → `git pull --ff-only origin <branch>` → `bun install` (only if
+`bun.lock` moved in the pulled diff) → `deploy.preflight` → `deploy.migrate` →
+`runBuild([])` in-process → `sudo systemctl restart <units>`.
 
 ### Firsts
 
@@ -1044,6 +1059,40 @@ itself.
   `bun.lock`: the lockfile isn't parsed (see `gyoza upgrade`), and it records
   what should be installed rather than whether the running code was replaced.
 - The `RESUME_SINCE` gate is always by version, because a commit can't be ordered.
+
+### Server preflight (`deploy.preflight`)
+
+Project-defined `deps` (software: `command` / `pkgConfig` / `library` / `exists`
+sources, semver `version`, `anyOf` alternatives) and `checks` (server state; built-ins
+in `src/checks.ts`, exported as `check`). User docs: [docs/deploy.md](docs/deploy.md#server-preflight).
+
+- **Runs first in `finishDeploy`**, i.e. after `bun install`. On a handoff the
+  *new* gyoza runs it, and the resume path needs no special case. Not before install:
+  that would run the old gyoza's preflight code against the new config.
+- **Everything runs, then decide.** One pass reports every problem; any `onFail:
+  'fail'` failure (the default) → `fail()` before migrate. `-y` never overrides it;
+  `--skip-preflight` does. `onFail` is `CheckAction` — `'continue'` was rejected,
+  since a failure that prints nothing is the same as no check.
+- **`Bun.semver.satisfies(v, 'garbage')` returns `true`.** `isValidRange` validates
+  ranges against the grammar at config load; never rely on bun to reject one. It
+  also returns `false` for partial versions (`16.4`), hence `coerceVersion`.
+- **Default version extraction** is the first dotted `N.N[.N]` token, with no suffix.
+  `6.1.1-3ubuntu5` would otherwise be a semver prerelease and fail `>=6`.
+- **Nothing may hang the deploy.** Probes go through `createExec` (10 s, SIGKILL,
+  result not awaited after timeout); checks are raced against 30 s. `mounted` reads
+  `/proc/self/mountinfo` and `freeSpace` shells out to `df` rather than `statfs` —
+  `statfs` on a dead hard NFS mount blocks in the kernel.
+- **`portFree` must pass for the service being deployed.** The old process still
+  holds the port. A listener whose `/proc/<pid>/cgroup` is a `deploy.service` unit
+  passes; a listener `ss` can't attribute (other user) passes only if a
+  `deploy.service` unit is `active`, and the detail says it assumed so.
+- **Factories must not throw at config load.** `loadConfig` swallows import errors and
+  falls back to the default config, silently dropping the whole preflight. Parse
+  arguments inside the returned check (see `freeSpace`).
+- `--dry` runs the pre-pull preflight (checks are read-only by contract) and exits 0.
+- `--skip-preflight` is forwarded on a handoff only to a child at or above
+  `PREFLIGHT_SINCE` (`handoffArgs`); an older child would reject it, and has no
+  preflight to skip anyway. `RESUME_SINCE` is unchanged.
 
 ### Failure leaves the old service running
 

@@ -9,9 +9,11 @@ import {
   currentBranch,
   detectChanges,
   FORCE_NOTICE,
+  handoffArgs,
   handoffDecision,
   normalizeServices,
   parseDeployArgs,
+  PREFLIGHT_SINCE,
   RESUME_FLAG,
   RESUME_SINCE,
   resumeArg,
@@ -23,24 +25,27 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('parseDeployArgs', () => {
+  const none = { dry: false, yes: false, skipPreflight: false };
+
   test('defaults everything to false', () => {
-    expect(parseDeployArgs([])).toEqual({ dry: false, yes: false });
+    expect(parseDeployArgs([])).toEqual(none);
   });
 
-  test('reads --dry and both -y / --yes', () => {
-    expect(parseDeployArgs(['--dry'])).toEqual({ dry: true, yes: false });
-    expect(parseDeployArgs(['-y'])).toEqual({ dry: false, yes: true });
-    expect(parseDeployArgs(['--yes', '--dry'])).toEqual({ dry: true, yes: true });
+  test('reads --dry, --skip-preflight, and both -y / --yes', () => {
+    expect(parseDeployArgs(['--dry'])).toEqual({ ...none, dry: true });
+    expect(parseDeployArgs(['-y'])).toEqual({ ...none, yes: true });
+    expect(parseDeployArgs(['--skip-preflight'])).toEqual({ ...none, skipPreflight: true });
+    expect(parseDeployArgs(['--yes', '--dry'])).toEqual({ ...none, dry: true, yes: true });
   });
 
   test('throws on an unknown flag, naming the supported ones', () => {
     expect(() => parseDeployArgs(['--skip-build'])).toThrow(/not a recognized flag/);
-    expect(() => parseDeployArgs(['--skip-build'])).toThrow(/--dry, -y\/--yes$/);
+    expect(() => parseDeployArgs(['--skip-build'])).toThrow(/--dry, -y\/--yes, --skip-preflight$/);
   });
 
   test('accepts the deprecated --force flag as a no-op', () => {
-    expect(parseDeployArgs(['--force'])).toEqual({ dry: false, yes: false });
-    expect(parseDeployArgs(['--force', '-y'])).toEqual({ dry: false, yes: true });
+    expect(parseDeployArgs(['--force'])).toEqual(none);
+    expect(parseDeployArgs(['--force', '-y'])).toEqual({ ...none, yes: true });
   });
 
   test('round-trips the handoff flag alongside --yes', () => {
@@ -49,8 +54,27 @@ describe('parseDeployArgs', () => {
     expect(parseDeployArgs([resumeArg(from, to), '--yes'])).toEqual({
       dry: false,
       yes: true,
+      skipPreflight: false,
       resume: { fromRef: from, toRef: to },
     });
+  });
+
+  test('round-trips handoffArgs, including --skip-preflight', () => {
+    const from = 'a1b2c3d';
+    const to = 'e4f5a6b';
+    const args = handoffArgs(from, to, { yes: true, skipPreflight: true }, PREFLIGHT_SINCE);
+    expect(parseDeployArgs(args)).toEqual({
+      dry: false,
+      yes: true,
+      skipPreflight: true,
+      resume: { fromRef: from, toRef: to },
+    });
+  });
+
+  test('handoffArgs does not send --skip-preflight to a child that predates it', () => {
+    expect(handoffArgs('a1b2c3d', 'e4f5a6b', { yes: false, skipPreflight: true }, RESUME_SINCE)).toEqual([
+      resumeArg('a1b2c3d', 'e4f5a6b'),
+    ]);
   });
 
   test('rejects a malformed handoff range', () => {
@@ -342,5 +366,95 @@ describe('runDeploy --dry', () => {
     expect(out).toContain('1 commit');
     expect(out).toContain('add lockfile');
     expect(out).toContain('bun install: yes — bun.lock changed');
+  });
+
+  // -------------------------------------------------------------------------
+  // deploy.preflight
+  // -------------------------------------------------------------------------
+
+  const PREFLIGHT_CONFIG = `export default {
+  deploy: {
+    migrate: 'db:migrate-not-a-script',
+    preflight: {
+      checks: {
+        good: () => true,
+        soft: { run: () => ({ ok: false, detail: 'meh' }), onFail: 'warn' },
+        bad: { run: () => ({ ok: false, detail: 'share offline' }) },
+      },
+    },
+  },
+};
+`;
+
+  const commitPreflightConfig = (): void => {
+    writeFileSync(join(work, 'gyoza.config.ts'), PREFLIGHT_CONFIG);
+    writeFileSync(join(work, 'package.json'), '{ "name": "fixture", "scripts": {} }\n');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-m', 'add preflight');
+    git(work, 'push', 'origin', 'main');
+  };
+
+  /** Captures every console stream; process.exit throws so the abort can be observed. */
+  const captureRun = async (args: string[]): Promise<{ out: string; exitCode: number | undefined }> => {
+    const lines: string[] = [];
+    const push = (...a: unknown[]): void => void lines.push(a.map(String).join(' '));
+    const spies = [
+      spyOn(console, 'log').mockImplementation(push),
+      spyOn(console, 'warn').mockImplementation(push),
+      spyOn(console, 'error').mockImplementation(push),
+    ];
+    let exitCode: number | undefined;
+    const exit = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error('process.exit');
+    }) as typeof process.exit);
+
+    try {
+      await runDeploy(args);
+    } catch (err) {
+      if (!(err instanceof Error && err.message === 'process.exit')) throw err;
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+      exit.mockRestore();
+    }
+    return { out: lines.join('\n'), exitCode };
+  };
+
+  test('--dry runs the preflight and reports what would abort', async () => {
+    commitPreflightConfig();
+    process.chdir(work);
+
+    const { out, exitCode } = await captureRun(['--dry']);
+
+    expect(exitCode).toBeUndefined();
+    expect(out).toContain('Preflight:   0 deps, 3 checks — results below');
+    expect(out).toContain('✓ good');
+    expect(out).toContain('⚠ soft  meh');
+    expect(out).toContain('✗ bad   share offline');
+    expect(out).toContain('1 failing check would abort the deploy');
+  });
+
+  test('a failing preflight aborts before migrate', async () => {
+    commitPreflightConfig();
+    process.chdir(work);
+
+    const { out, exitCode } = await captureRun(['-y']);
+
+    expect(exitCode).toBe(1);
+    expect(out).toContain('Preflight failed (1 check)');
+    // migrate would have failed on the missing script — it never ran.
+    expect(out).not.toContain('db:migrate-not-a-script');
+  });
+
+  test('--skip-preflight goes straight to migrate', async () => {
+    commitPreflightConfig();
+    process.chdir(work);
+
+    const { out, exitCode } = await captureRun(['-y', '--skip-preflight']);
+
+    expect(exitCode).toBe(1);
+    expect(out).toContain('Skipping deploy.preflight');
+    expect(out).not.toContain('share offline');
+    expect(out).toContain('deploy.migrate names "db:migrate-not-a-script"');
   });
 });

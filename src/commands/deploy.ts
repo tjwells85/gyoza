@@ -3,6 +3,8 @@ import type { PackageJson } from 'type-fest';
 import { loadConfig, validateDeployConfig } from '../config.ts';
 import type { DeployConfig, DeployMigrateContext } from '../config.ts';
 import type { CommandFlag } from '../gyoza.ts';
+import { createExec, hasPreflight, runPreflight } from '../preflight.ts';
+import type { PreflightSummary } from '../preflight.ts';
 import { confirm } from '../prompt.ts';
 import { compareVersions } from '../version.ts';
 import { readPackageJson, rootPackagePath } from '../workspaces.ts';
@@ -15,13 +17,14 @@ export const description = 'Pull, install, migrate, build, and restart the servi
 export const flags: CommandFlag[] = [
   { flag: '--dry', description: 'Print the deploy plan and exit without changing anything' },
   { flag: '-y, --yes', description: 'Skip confirmation prompts' },
+  { flag: '--skip-preflight', description: 'Do not run deploy.preflight checks' },
 ];
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
-const BOOLEAN_FLAGS = new Set(['--dry', '-y', '--yes']);
+const BOOLEAN_FLAGS = new Set(['--dry', '-y', '--yes', '--skip-preflight']);
 
 /** Accepted so old scripts keep working; it changes nothing. Unlisted in `flags`. */
 export const DEPRECATED_FORCE = '--force';
@@ -39,20 +42,43 @@ export const RESUME_FLAG = '--resume-after-install';
 /** First release that understands {@link RESUME_FLAG}. Handing off to anything older would fail on the flag. */
 export const RESUME_SINCE = '0.12.0';
 
+/**
+ * First release with `deploy.preflight` and `--skip-preflight`. A handoff passes
+ * the flag only to a child at least this new; an older child has no preflight to
+ * skip and would reject the flag.
+ */
+export const PREFLIGHT_SINCE = '0.14.0';
+
 const SHA = /^[0-9a-f]{7,40}$/;
 
 export interface DeployArgs {
   dry: boolean;
   yes: boolean;
+  skipPreflight: boolean;
   /** Set only by a handoff — the pull and install already ran between these refs. */
   resume?: { fromRef: string; toRef: string };
 }
 
 export const resumeArg = (fromRef: string, toRef: string): string => `${RESUME_FLAG}=${fromRef}..${toRef}`;
 
+/** Arguments for the child gyoza after a handoff. Only flags the child understands are forwarded. */
+export const handoffArgs = (
+  fromRef: string,
+  toRef: string,
+  { yes, skipPreflight }: Pick<DeployArgs, 'yes' | 'skipPreflight'>,
+  childVersion: string | undefined,
+): string[] => [
+  resumeArg(fromRef, toRef),
+  ...(yes ? ['--yes'] : []),
+  ...(skipPreflight && childVersion !== undefined && compareVersions(childVersion, PREFLIGHT_SINCE) >= 0
+    ? ['--skip-preflight']
+    : []),
+];
+
 export const parseDeployArgs = (args: string[]): DeployArgs => {
   let dry = false;
   let yes = false;
+  let skipPreflight = false;
   let resume: DeployArgs['resume'];
 
   for (const arg of args) {
@@ -66,13 +92,16 @@ export const parseDeployArgs = (args: string[]): DeployArgs => {
     }
     if (arg === DEPRECATED_FORCE) continue;
     if (!BOOLEAN_FLAGS.has(arg)) {
-      throw new Error(`"${arg}" is not a recognized flag for gyoza deploy.\n  Supported: --dry, -y/--yes`);
+      throw new Error(
+        `"${arg}" is not a recognized flag for gyoza deploy.\n  Supported: --dry, -y/--yes, --skip-preflight`,
+      );
     }
     if (arg === '--dry') dry = true;
+    else if (arg === '--skip-preflight') skipPreflight = true;
     else yes = true;
   }
 
-  return resume ? { dry, yes, resume } : { dry, yes };
+  return resume ? { dry, yes, skipPreflight, resume } : { dry, yes, skipPreflight };
 };
 
 /**
@@ -148,20 +177,41 @@ const describeMigrate = (migrate: DeployConfig['migrate'], sqlCount: number): st
 const describeService = (service: DeployConfig['service']): string =>
   service === undefined ? 'not configured — would prompt' : `sudo systemctl restart ${normalizeServices(service).join(' ')}`;
 
-const printDryPlan = async (cwd: string, branch: string, deploy: DeployConfig): Promise<void> => {
+const describePreflight = (deploy: DeployConfig, skip: boolean): string => {
+  if (!hasPreflight(deploy.preflight)) return 'not configured';
+  const deps = Object.keys(deploy.preflight.deps ?? {}).length;
+  const checks = Object.keys(deploy.preflight.checks ?? {}).length;
+  const counts = `${deps} dep${deps === 1 ? '' : 's'}, ${checks} check${checks === 1 ? '' : 's'}`;
+  return skip ? `skipped (--skip-preflight) — ${counts}` : `${counts} — results below`;
+};
+
+/** Prints the plan and returns the refs the preflight context should describe. */
+const printDryPlan = async (
+  cwd: string,
+  branch: string,
+  deploy: DeployConfig,
+  skipPreflight: boolean,
+): Promise<DeployMigrateContext> => {
   console.log('Deploy plan (dry run)\n');
   console.log(`  Branch:      ${branch}`);
   console.log(`  Pull:        git pull --ff-only origin ${branch}`);
 
+  const head = (await capture(['git', 'rev-parse', 'HEAD'], cwd)).stdout.trim();
+  const refs: DeployMigrateContext = { projectRoot: cwd, changedFiles: [], fromRef: head, toRef: head };
+
   const fetch = await capture(['git', 'fetch', 'origin', branch], cwd);
   if (fetch.exitCode !== 0) {
     console.log(`  Incoming:    could not fetch origin/${branch} — ${fetch.stderr.trim().split('\n')[0] ?? ''}`);
-    return;
+    console.log(`  Preflight:   ${describePreflight(deploy, skipPreflight)}`);
+    return refs;
   }
 
   const range = `HEAD..origin/${branch}`;
   const commits = (await capture(['git', 'log', '--oneline', range], cwd)).stdout.trim();
-  const changes = detectChanges((await capture(['git', 'diff', '--name-only', range], cwd)).stdout);
+  const diffOut = (await capture(['git', 'diff', '--name-only', range], cwd)).stdout;
+  const changes = detectChanges(diffOut);
+  refs.changedFiles = diffOut.split('\n').map((line) => line.trim()).filter(Boolean);
+  refs.toRef = (await capture(['git', 'rev-parse', `origin/${branch}`], cwd)).stdout.trim() || head;
 
   if (commits === '') {
     console.log('  Incoming:    up to date — no new commits, will still build and restart');
@@ -172,13 +222,31 @@ const printDryPlan = async (cwd: string, branch: string, deploy: DeployConfig): 
   }
 
   console.log(`  bun install: ${changes.lockChanged ? 'yes — bun.lock changed' : 'no — bun.lock unchanged'}`);
+  console.log(`  Preflight:   ${describePreflight(deploy, skipPreflight)}`);
   console.log(`  Migrate:     ${describeMigrate(deploy.migrate, changes.sqlFiles.length)}`);
   console.log('  Build:       gyoza build');
   console.log(`  Restart:     ${describeService(deploy.service)}`);
   if (changes.configChanged) {
-    console.log('  Config:      gyoza.config.ts changes in this pull — migrate/restart above reflect the');
-    console.log('               current config; the deploy reloads it after pulling');
+    console.log('  Config:      gyoza.config.ts changes in this pull — preflight/migrate/restart above reflect');
+    console.log('               the current config; the deploy reloads it after pulling');
   }
+  return refs;
+};
+
+/** Runs `deploy.preflight` against the server. `undefined` when nothing is configured. */
+const runPreflightStep = async (
+  cwd: string,
+  deploy: DeployConfig,
+  refs: DeployMigrateContext,
+  heading: string,
+): Promise<PreflightSummary | undefined> => {
+  if (!hasPreflight(deploy.preflight)) return undefined;
+  console.log(`\n🔎  ${heading}`);
+  return runPreflight(deploy.preflight, {
+    ...refs,
+    services: deploy.service === undefined ? [] : normalizeServices(deploy.service),
+    exec: createExec(cwd),
+  });
 };
 
 const runMigrate = async (
@@ -261,7 +329,10 @@ const diffRefs = async (
   };
 };
 
-/** Migrate → build → restart. Shared by a normal deploy and a post-install handoff. */
+/**
+ * Preflight → migrate → build → restart. Shared by a normal deploy and a
+ * post-install handoff, so after a handoff the preflight runs in the new gyoza.
+ */
 const finishDeploy = async (
   cwd: string,
   deploy: DeployConfig,
@@ -269,15 +340,23 @@ const finishDeploy = async (
   diff: { changes: DetectedChanges; changedFiles: string[] },
   before: string,
   after: string,
-  yes: boolean,
+  { yes, skipPreflight }: Pick<DeployArgs, 'yes' | 'skipPreflight'>,
 ): Promise<void> => {
-  await runMigrate(
-    cwd,
-    deploy.migrate,
-    diff.changes,
-    { projectRoot: cwd, changedFiles: diff.changedFiles, fromRef: before, toRef: after },
-    yes,
-  );
+  const ctx: DeployMigrateContext = { projectRoot: cwd, changedFiles: diff.changedFiles, fromRef: before, toRef: after };
+
+  if (skipPreflight && hasPreflight(deploy.preflight)) {
+    console.warn('\n⚠  Skipping deploy.preflight (--skip-preflight).');
+  } else {
+    const summary = await runPreflightStep(cwd, deploy, ctx, 'Preflight');
+    if (summary && summary.failed > 0) {
+      fail(
+        `Preflight failed (${summary.failed} check${summary.failed === 1 ? '' : 's'}) — nothing was migrated, ` +
+          'built or restarted.\n  Fix the cause and re-run, or pass --skip-preflight.',
+      );
+    }
+  }
+
+  await runMigrate(cwd, deploy.migrate, diff.changes, ctx, yes);
 
   console.log('\n🏗  Building...');
   await runBuild([]);
@@ -302,7 +381,7 @@ const runDeploy = async (args: string[]): Promise<void> => {
   const cwd = process.cwd();
 
   try {
-    const { dry, yes, resume } = parseDeployArgs(args);
+    const { dry, yes, skipPreflight, resume } = parseDeployArgs(args);
     if (args.includes(DEPRECATED_FORCE)) console.log(`⚠  ${FORCE_NOTICE}\n`);
 
     let deploy = await loadDeployConfig(cwd);
@@ -325,12 +404,19 @@ const runDeploy = async (args: string[]): Promise<void> => {
     if (resume) {
       console.log(`\n🔁  Resuming deploy in gyoza ${describeInstall(readGyozaInstall(gyozaPackageDir()))}...`);
       const diff = await diffRefs(cwd, resume.fromRef, resume.toRef);
-      await finishDeploy(cwd, deploy, branch, diff, resume.fromRef, resume.toRef, yes);
+      await finishDeploy(cwd, deploy, branch, diff, resume.fromRef, resume.toRef, { yes, skipPreflight });
       return;
     }
 
     if (dry) {
-      await printDryPlan(cwd, branch, deploy);
+      const refs = await printDryPlan(cwd, branch, deploy, skipPreflight);
+      if (!skipPreflight) {
+        // Checks are read-only by contract, so --dry runs them: "would this server deploy?"
+        const summary = await runPreflightStep(cwd, deploy, refs, 'Preflight (current config — the pull may change it)');
+        if (summary && summary.failed > 0) {
+          console.log(`\n   ${summary.failed} failing check${summary.failed === 1 ? '' : 's'} would abort the deploy.`);
+        }
+      }
       return;
     }
 
@@ -385,8 +471,8 @@ const runDeploy = async (args: string[]): Promise<void> => {
 
       if (decision === 'handoff') {
         console.log(`\n🔁  bun install moved ${moved} — handing the deploy to the new version...`);
-        const handoffArgs = [resumeArg(before, after), ...(yes ? ['--yes'] : [])];
-        process.exit(await stream(['bun', join(packageDir, 'cli.ts'), 'deploy', ...handoffArgs], cwd));
+        const childArgs = handoffArgs(before, after, { yes, skipPreflight }, gyozaAfter.version);
+        process.exit(await stream(['bun', join(packageDir, 'cli.ts'), 'deploy', ...childArgs], cwd));
       }
       if (decision === 'too-old') {
         console.log(
@@ -398,7 +484,7 @@ const runDeploy = async (args: string[]): Promise<void> => {
       console.log('\n·  bun.lock unchanged — skipping bun install.');
     }
 
-    await finishDeploy(cwd, deploy, branch, diff, before, after, yes);
+    await finishDeploy(cwd, deploy, branch, diff, before, after, { yes, skipPreflight });
   } catch (err) {
     console.error(`\n  ✗  ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);

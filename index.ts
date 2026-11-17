@@ -1,4 +1,5 @@
 export { defineConfig } from './src/config.ts';
+export { check } from './src/checks.ts';
 export type {
   BuildConfig,
   BuildContext,
@@ -6,6 +7,7 @@ export type {
   BuildStepEntry,
   BuildStepMap,
   BuildSteps,
+  CheckAction,
   CustomScripts,
   DeployConfig,
   DeployMigrate,
@@ -17,4 +19,22 @@ export type {
   PreStepContext,
   StepResults,
 } from './src/config.ts';
+export type {
+  AnyOfDep,
+  CheckResult,
+  CommandDep,
+  DepAlternative,
+  ExecResult,
+  ExistsDep,
+  LibraryDep,
+  PkgConfigDep,
+  PreflightCheck,
+  PreflightCheckFn,
+  PreflightConfig,
+  PreflightContext,
+  PreflightDep,
+  PreflightExec,
+  SingleDep,
+  VersionSpec,
+} from './src/preflight.ts';
 export type { Command, CommandFlag, CommandGroup, GyozaNode } from './src/gyoza.ts';

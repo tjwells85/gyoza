@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { validatePreflightConfig } from './preflight.ts';
+import type { PreflightConfig } from './preflight.ts';
 
 /** Values returned by steps that have already run, keyed by their step key. */
 export interface StepResults {
@@ -131,6 +133,12 @@ export interface DeployConfig {
    * `'app'` or `'app.service'`; an array restarts every unit in one call. Default: none — `gyoza deploy` prompts.
    */
   service?: string | string[];
+  /**
+   * External dependencies and server-state checks run after the pull and install,
+   * before migrate/build/restart. A failure with `onFail: 'fail'` (the default)
+   * aborts the deploy with the old service still running.
+   */
+  preflight?: PreflightConfig;
 }
 
 /**
@@ -369,6 +377,8 @@ export const validateDeployConfig = (config: GyozaConfig): ConfigDiagnostics => 
       }
     });
   }
+
+  validatePreflightConfig(deploy.preflight, errors);
 
   return { errors, warnings };
 };

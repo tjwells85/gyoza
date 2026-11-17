@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.14.0] - 2026-11-17
+
+### Added
+
+- `deploy.preflight`: checks the server before `gyoza deploy` migrates, builds or
+  restarts. It runs after the pull and `bun install`. When the install updates
+  gyoza, the new gyoza runs it after the handoff. See
+  [docs/deploy.md](docs/deploy.md#server-preflight)
+  - `deps` lists required software. Each dependency is found by `command` (on
+    `PATH`), `pkgConfig`, `library` (`ldconfig -p`) or a custom `exists`
+    function. A `version` range is checked against the output of
+    `<command> --version` or `pkg-config --modversion` by default. When a tool's
+    output doesn't fit, set your own `probe`, a `match` template with a
+    `{version}` marker, a RegExp, or a `get` function
+  - `anyOf` takes alternatives, e.g. redis **or** valkey
+  - `checks` holds server-state checks: a function, or `{ name, run, onFail }`.
+    Built-ins are exported as `check`: `mounted`, `freeSpace`, `portFree`,
+    `serviceActive` and `commandSucceeds`. `portFree` passes for the service
+    being deployed, which still holds its port
+  - Each entry has `onFail: 'fail'` (the default), which aborts before migrate
+    once every entry has been reported, or `'warn'`, which reports it and
+    continues. Every probe has a timeout, so a hung share fails the deploy
+    instead of hanging it
+  - The config is validated before the pull. That includes semver ranges,
+    which `Bun.semver` would otherwise accept even when they're invalid
+- `gyoza deploy --skip-preflight` skips `deploy.preflight`
+- `gyoza deploy --dry` runs the preflight against the current config and
+  reports what would abort the deploy
+
 ## [0.13.0] - 2026-11-17
 
 ### Changed
