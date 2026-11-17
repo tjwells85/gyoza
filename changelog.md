@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.13.0] - 2026-11-17
+
+### Changed
+
+- `gyoza deploy` no longer stops when the pull brings no new commits. It prints
+  "Already up to date — rebuilding and restarting anyway." and runs migrate,
+  build and restart as usual, so it also works as a one-step rebuild and
+  restart. The final line reads `Deployed main at abc1234` in that case
+- `--force` on `gyoza deploy` is deprecated. It is still accepted so existing
+  scripts keep working, but it does nothing except print a notice that its
+  behaviour is now the default. It no longer appears in `--help`
+
+### Fixed
+
+- `gyoza deploy` asked "No deploy.service configured" before pulling, so a
+  deploy whose pull added `deploy.service` to `gyoza.config.ts` still prompted.
+  The question is now asked after the pull and config reload (and before
+  `bun install`), so only a service missing from the pulled config is asked
+  about
+
 ## [0.12.0] - 2026-10-23
 
 ### Added

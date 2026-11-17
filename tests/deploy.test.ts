@@ -8,6 +8,7 @@ import type { GyozaConfig } from '../src/config.ts';
 import {
   currentBranch,
   detectChanges,
+  FORCE_NOTICE,
   handoffDecision,
   normalizeServices,
   parseDeployArgs,
@@ -23,19 +24,23 @@ import {
 
 describe('parseDeployArgs', () => {
   test('defaults everything to false', () => {
-    expect(parseDeployArgs([])).toEqual({ dry: false, yes: false, force: false });
+    expect(parseDeployArgs([])).toEqual({ dry: false, yes: false });
   });
 
-  test('reads --dry, --force, and both -y / --yes', () => {
-    expect(parseDeployArgs(['--dry'])).toEqual({ dry: true, yes: false, force: false });
-    expect(parseDeployArgs(['--force'])).toEqual({ dry: false, yes: false, force: true });
-    expect(parseDeployArgs(['-y'])).toEqual({ dry: false, yes: true, force: false });
-    expect(parseDeployArgs(['--yes', '--dry', '--force'])).toEqual({ dry: true, yes: true, force: true });
+  test('reads --dry and both -y / --yes', () => {
+    expect(parseDeployArgs(['--dry'])).toEqual({ dry: true, yes: false });
+    expect(parseDeployArgs(['-y'])).toEqual({ dry: false, yes: true });
+    expect(parseDeployArgs(['--yes', '--dry'])).toEqual({ dry: true, yes: true });
   });
 
   test('throws on an unknown flag, naming the supported ones', () => {
     expect(() => parseDeployArgs(['--skip-build'])).toThrow(/not a recognized flag/);
-    expect(() => parseDeployArgs(['--skip-build'])).toThrow(/--dry, -y\/--yes, --force/);
+    expect(() => parseDeployArgs(['--skip-build'])).toThrow(/--dry, -y\/--yes$/);
+  });
+
+  test('accepts the deprecated --force flag as a no-op', () => {
+    expect(parseDeployArgs(['--force'])).toEqual({ dry: false, yes: false });
+    expect(parseDeployArgs(['--force', '-y'])).toEqual({ dry: false, yes: true });
   });
 
   test('round-trips the handoff flag alongside --yes', () => {
@@ -44,7 +49,6 @@ describe('parseDeployArgs', () => {
     expect(parseDeployArgs([resumeArg(from, to), '--yes'])).toEqual({
       dry: false,
       yes: true,
-      force: false,
       resume: { fromRef: from, toRef: to },
     });
   });
@@ -289,6 +293,24 @@ describe('runDeploy --dry', () => {
 
     // Working tree untouched.
     expect(execFileSync('git', ['status', '--porcelain'], { cwd: work }).toString()).toBe('');
+  });
+
+  test('--force prints the deprecation notice and otherwise changes nothing', async () => {
+    process.chdir(work);
+    const logs: string[] = [];
+    const log = spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      logs.push(a.map(String).join(' '));
+    });
+
+    try {
+      await runDeploy(['--dry', '--force']);
+    } finally {
+      log.mockRestore();
+    }
+
+    const out = logs.join('\n');
+    expect(out).toContain(FORCE_NOTICE);
+    expect(out).toContain('Deploy plan (dry run)');
   });
 
   test('reports incoming commits and a lockfile change', async () => {

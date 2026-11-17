@@ -15,14 +15,19 @@ export const description = 'Pull, install, migrate, build, and restart the servi
 export const flags: CommandFlag[] = [
   { flag: '--dry', description: 'Print the deploy plan and exit without changing anything' },
   { flag: '-y, --yes', description: 'Skip confirmation prompts' },
-  { flag: '--force', description: 'Build and restart even when the pull brought no changes' },
 ];
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
-const BOOLEAN_FLAGS = new Set(['--dry', '-y', '--yes', '--force']);
+const BOOLEAN_FLAGS = new Set(['--dry', '-y', '--yes']);
+
+/** Accepted so old scripts keep working; it changes nothing. Unlisted in `flags`. */
+export const DEPRECATED_FORCE = '--force';
+export const FORCE_NOTICE =
+  'The --force flag has been deprecated and is no longer necessary — ' +
+  'deploy now always builds and restarts, even when the pull brings no new commits.';
 
 /**
  * Internal, unlisted flag: a pre-install gyoza hands the deploy to the gyoza that
@@ -39,7 +44,6 @@ const SHA = /^[0-9a-f]{7,40}$/;
 export interface DeployArgs {
   dry: boolean;
   yes: boolean;
-  force: boolean;
   /** Set only by a handoff — the pull and install already ran between these refs. */
   resume?: { fromRef: string; toRef: string };
 }
@@ -49,7 +53,6 @@ export const resumeArg = (fromRef: string, toRef: string): string => `${RESUME_F
 export const parseDeployArgs = (args: string[]): DeployArgs => {
   let dry = false;
   let yes = false;
-  let force = false;
   let resume: DeployArgs['resume'];
 
   for (const arg of args) {
@@ -61,15 +64,15 @@ export const parseDeployArgs = (args: string[]): DeployArgs => {
       resume = { fromRef, toRef };
       continue;
     }
+    if (arg === DEPRECATED_FORCE) continue;
     if (!BOOLEAN_FLAGS.has(arg)) {
-      throw new Error(`"${arg}" is not a recognized flag for gyoza deploy.\n  Supported: --dry, -y/--yes, --force`);
+      throw new Error(`"${arg}" is not a recognized flag for gyoza deploy.\n  Supported: --dry, -y/--yes`);
     }
     if (arg === '--dry') dry = true;
-    else if (arg === '--force') force = true;
     else yes = true;
   }
 
-  return resume ? { dry, yes, force, resume } : { dry, yes, force };
+  return resume ? { dry, yes, resume } : { dry, yes };
 };
 
 /**
@@ -161,7 +164,7 @@ const printDryPlan = async (cwd: string, branch: string, deploy: DeployConfig): 
   const changes = detectChanges((await capture(['git', 'diff', '--name-only', range], cwd)).stdout);
 
   if (commits === '') {
-    console.log('  Incoming:    up to date — nothing to deploy (use --force to rebuild and restart)');
+    console.log('  Incoming:    up to date — no new commits, will still build and restart');
   } else {
     const lines = commits.split('\n');
     console.log(`  Incoming:    ${lines.length} commit${lines.length === 1 ? '' : 's'}`);
@@ -229,6 +232,7 @@ const loadDeployConfig = async (cwd: string): Promise<DeployConfig> => {
   return config.deploy ?? {};
 };
 
+/** Asked after the pull, so a service added in the pulled config is seen. */
 const confirmNoService = async (yes: boolean): Promise<void> => {
   if (!yes && nonInteractive()) {
     fail(
@@ -290,14 +294,16 @@ const finishDeploy = async (
     }
   }
 
-  console.log(`\n✅  Deployed ${branch}  ${before.slice(0, 7)} → ${after.slice(0, 7)}`);
+  const refs = before === after ? ` at ${after.slice(0, 7)}` : `  ${before.slice(0, 7)} → ${after.slice(0, 7)}`;
+  console.log(`\n✅  Deployed ${branch}${refs}`);
 };
 
 const runDeploy = async (args: string[]): Promise<void> => {
   const cwd = process.cwd();
 
   try {
-    const { dry, yes, force, resume } = parseDeployArgs(args);
+    const { dry, yes, resume } = parseDeployArgs(args);
+    if (args.includes(DEPRECATED_FORCE)) console.log(`⚠  ${FORCE_NOTICE}\n`);
 
     let deploy = await loadDeployConfig(cwd);
 
@@ -334,9 +340,6 @@ const runDeploy = async (args: string[]): Promise<void> => {
       fail('The working tree has uncommitted changes. Commit or stash them before deploying.');
     }
 
-    // Settle the service question before pulling, so an unattended run fails fast.
-    if (deploy.service === undefined) await confirmNoService(yes);
-
     const before = (await capture(['git', 'rev-parse', 'HEAD'], cwd)).stdout.trim();
 
     console.log(`\n⬇  Pulling origin/${branch} (fast-forward only)...`);
@@ -352,19 +355,18 @@ const runDeploy = async (args: string[]): Promise<void> => {
     const diff = await diffRefs(cwd, before, after);
     const { changes } = diff;
 
-    if (before === after && !force) {
-      console.log('\n✓  Already up to date — nothing to deploy. (use --force to rebuild and restart)');
-      return;
-    }
+    // No new commits is not a reason to stop — deploy doubles as "rebuild and restart".
+    if (before === after) console.log('\n·  Already up to date — rebuilding and restarting anyway.');
 
     // Everything past the pull must run against the config it brought in.
     if (changes.configChanged) {
       console.log('\n🔁  gyoza.config.ts changed — reloading config...');
-      const hadService = deploy.service !== undefined;
       deploy = await loadDeployConfig(cwd);
-      // Only ask if the pull removed the service — an unset one was already confirmed above.
-      if (hadService && deploy.service === undefined) await confirmNoService(yes);
     }
+
+    // After the reload, so a service added by this pull counts. Before the
+    // install, because a handed-off child skips this question.
+    if (deploy.service === undefined) await confirmNoService(yes);
 
     if (changes.lockChanged) {
       // The running gyoza's own package — not cwd — since the question is whether

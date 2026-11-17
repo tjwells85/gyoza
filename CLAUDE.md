@@ -96,7 +96,6 @@ No CLI framework (no commander, yargs, etc.). `cli.ts` tree-walks a
 | `gyoza deploy`              | Pull, install, migrate, build, restart the systemd service  |
 | `gyoza deploy --dry`        | Print the deploy plan without changing anything             |
 | `gyoza deploy -y`           | Deploy without confirmation prompts                         |
-| `gyoza deploy --force`      | Build and restart even when the pull brought nothing new    |
 | `gyoza help`                | Print available commands                                    |
 
 ### How it is consumed
@@ -538,8 +537,9 @@ Before considering the initial implementation complete:
 - [ ] `build.pre` as an object with `build.post` as an array is a preflight error
 - [ ] `gyoza deploy --dry` prints the plan (branch, pull cmd, incoming commits,
       install/migrate/build/restart) and mutates nothing
-- [ ] `gyoza deploy` on an up-to-date branch prints "Already up to date" and exits
-      0; `--force` still builds and restarts
+- [ ] `gyoza deploy` on an up-to-date branch prints "Already up to date" and still
+      migrates, builds and restarts; `--force` prints a deprecation notice and
+      changes nothing
 - [ ] a diverged server tree makes `git pull --ff-only` abort with a clear message
       and no further steps run
 - [ ] `bun install` runs only when `bun.lock` is in the pulled diff
@@ -970,7 +970,15 @@ out to `git`** — nothing else in gyoza does either. It still follows the
 Plain `git pull` creates a merge commit whenever the server checkout has a commit
 the remote lacks (in-place hotfix, half-finished prior deploy, CRLF churn).
 `--ff-only` turns that into a loud failure instead of a silent merge. A dirty
-working tree aborts in preflight for the same reason — no `--force` override in v1.
+working tree aborts in preflight for the same reason — there is no override flag.
+
+### No new commits still deploys
+
+An up-to-date pull is not a stop condition: migrate → build → restart run anyway,
+so `gyoza deploy` doubles as "rebuild and restart". `--force` used to gate this.
+It is still accepted (`DEPRECATED_FORCE`) so existing server scripts don't break,
+does nothing, prints `FORCE_NOTICE`, and is left out of `flags` and the
+unknown-flag error so help never advertises it.
 
 ### Migrate runs every deploy
 
@@ -1003,8 +1011,11 @@ nonexistent unit, and `runBuild`'s own `loadConfig` call ran stale build steps.
 `loadConfig` imports `gyoza.config.ts?v=<content hash>`, so every call reflects the
 file on disk; unchanged content reuses the cached module. When the pulled diff
 contains the root `gyoza.config.ts`, `runDeploy` reloads and re-validates the
-`deploy` block, and re-prompts only if the pull *removed* `deploy.service`. Modules
-the config imports are not re-evaluated — documented, not fixed.
+`deploy` block. The unset-`deploy.service` prompt runs only after that reload
+(and before the install, since a handoff child skips it), so a pull that adds the
+service is never asked about. Declining or a no-TTY abort happens after the pull;
+that's fine because an up-to-date deploy still builds and restarts. Modules the
+config imports are not re-evaluated — documented, not fixed.
 
 ### Self-update handoff after install
 

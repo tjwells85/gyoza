@@ -7,8 +7,12 @@ restart.
 gyoza deploy         # run the deploy
 gyoza deploy --dry   # print the plan, change nothing
 gyoza deploy -y      # run it without any confirmation prompts
-gyoza deploy --force # rebuild and restart even if the pull brought nothing new
 ```
+
+No new commits is not an error: the deploy still migrates, builds and restarts,
+so `gyoza deploy` doubles as a one-step "rebuild and restart". The old `--force`
+flag that used to enable this is still accepted, but it only prints a deprecation
+notice.
 
 > `gyoza build` produces `build/`.
 > `gyoza deploy` runs `gyoza build` as one step of shipping it to a running server.
@@ -32,13 +36,15 @@ it from.
 ## What it does
 
 1. **Preflight.** Validates the `deploy` config, confirms `cwd` is a git work tree
-   on a branch (not detached), and that the working tree is clean. If
-   `deploy.service` is unset it asks whether to finish without a restart.
+   on a branch (not detached), and that the working tree is clean.
 2. **Pull.** `git pull --ff-only origin <current-branch>`. Fast-forward only — if
    the server checkout has diverged, the pull aborts and nothing else runs.
    If the pull changed `gyoza.config.ts`, the config is reloaded and re-validated
    here, so every later step uses the new values (a renamed `deploy.service`,
-   new build steps, …).
+   new build steps, …). Only then, if `deploy.service` is still unset, it asks
+   whether to finish without a restart — so pushing a config that adds the
+   service and deploying it works in one run. Declining leaves the pull in
+   place; a re-run picks up from there.
 3. **Install.** Runs `bun install` only if `bun.lock` is among the pulled changes.
    If that install changed gyoza's own version, the rest of the deploy is handed
    to the newly installed gyoza (see [Self-update during a deploy](#self-update-during-a-deploy)).
@@ -168,7 +174,6 @@ the no-restart confirmation already happened, so it doesn't repeat them.
 | --- | --- |
 | `--dry` | Fetch `origin`, print the full plan, change nothing else |
 | `-y, --yes` | Skip every confirmation prompt (deploys without a restart if `deploy.service` is unset) |
-| `--force` | Run build + restart even when the pull brought no new commits |
 
 ---
 
@@ -201,4 +206,4 @@ and the remaining steps proceed.
 
 Only `gyoza.config.ts` itself is reloaded. A local module it imports (say a
 `build-steps.ts` helper) stays at its pre-pull version for the rest of that run;
-re-run with `--force` if such a file changed.
+re-run `gyoza deploy` if such a file changed.
