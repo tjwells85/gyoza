@@ -223,7 +223,7 @@ and `anyOf` can't be nested.
 
 | Check | Passes when |
 | --- | --- |
-| `check.mounted(path, { fstype? })` | `path` is a mount point (optionally of that filesystem type). Reads `/proc/self/mountinfo` and never touches the mount, so a hung share can't hang the deploy |
+| `check.mounted(path, { fstype? })` | `path` is on a mounted filesystem: a mount point itself, or anywhere inside one (`/mnt/apps/my-app` on a share mounted at `/mnt/apps`). It fails when the deepest mount above `path` is `/`, which is where the path ends up when the share isn't mounted. `fstype` (e.g. `'nfs4'`) is checked against that containing mount, and is worth setting when `/mnt` itself is a separate local disk. Reads `/proc/self/mountinfo` and never touches the mount, so a hung share can't hang the deploy. Symlinks aren't resolved, so pass the real path |
 | `check.freeSpace(path, '20GB')` | at least that much is free, via `df` with a timeout. `KB`/`MB`/`GB`/`TB` are decimal, `K`/`G`/`GiB` are binary, and a number is bytes |
 | `check.portFree(3000)` | nothing *else* listens on the TCP port (see below) |
 | `check.serviceActive('postgresql')` | `systemctl is-active` reports `active` |

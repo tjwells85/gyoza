@@ -28,13 +28,33 @@ export const parseMountinfo = (text: string): MountEntry[] =>
       const [left, right] = line.split(' - ');
       const mountPoint = left?.split(' ')[4];
       const [fsType, source] = right?.split(' ') ?? [];
-      return mountPoint && fsType ? { mountPoint: decodeMountPath(mountPoint), fsType, source: source ?? '' } : null;
+      return mountPoint && fsType
+        ? { mountPoint: decodeMountPath(mountPoint), fsType, source: decodeMountPath(source ?? '') }
+        : null;
     })
     .filter((entry): entry is MountEntry => entry !== null);
 
 /** The last entry wins — a later mount over the same path hides the earlier one. */
 export const findMount = (entries: MountEntry[], path: string): MountEntry | undefined =>
   entries.findLast((entry) => entry.mountPoint === path);
+
+const isUnder = (path: string, mountPoint: string): boolean =>
+  mountPoint === '/' || path === mountPoint || path.startsWith(`${mountPoint}/`);
+
+/**
+ * The mount `path` lives on, like `findmnt -T`: the deepest mount point at or above
+ * it. `/` always matches, so this is only `undefined` for an empty table.
+ */
+export const findContainingMount = (entries: MountEntry[], path: string): MountEntry | undefined => {
+  let best: MountEntry | undefined;
+  for (const entry of entries) {
+    // `>=` so a later mount over the same point wins, as in findMount.
+    if (isUnder(path, entry.mountPoint) && (!best || entry.mountPoint.length >= best.mountPoint.length)) {
+      best = entry;
+    }
+  }
+  return best;
+};
 
 const SIZE_UNITS: Record<string, number> = {
   b: 1,
@@ -111,8 +131,13 @@ const readText = (path: string): string | undefined => {
 const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? '';
 
 /**
- * `path` is a mount point (optionally of `fstype`). Reads `/proc/self/mountinfo`
- * and never touches the mount itself, so a hung NFS share can't block it.
+ * `path` is on a mounted filesystem: a mount point itself, or anywhere inside one
+ * (`/mnt/apps/my-app` on a share mounted at `/mnt/apps`). A path whose deepest
+ * mount is `/` fails, since that is where it ends up when the share isn't mounted.
+ * `fstype` is checked against that containing mount.
+ *
+ * Reads `/proc/self/mountinfo` and never touches the mount, so a hung NFS share
+ * can't block it. For the same reason symlinks are not resolved: pass the real path.
  */
 const mounted =
   (path: string, opts: { fstype?: string } = {}): PreflightCheckFn =>
@@ -120,12 +145,15 @@ const mounted =
     const target = resolve(path);
     const info = readText('/proc/self/mountinfo');
     if (info === undefined) return { ok: false, detail: 'cannot read /proc/self/mountinfo' };
-    const entry = findMount(parseMountinfo(info), target);
-    if (!entry) return { ok: false, detail: `${target} is not a mount point` };
-    if (opts.fstype && entry.fsType !== opts.fstype) {
-      return { ok: false, detail: `${target} is ${entry.fsType}, expected ${opts.fstype}` };
+    const entry = findContainingMount(parseMountinfo(info), target);
+    if (!entry || entry.mountPoint === '/') {
+      return { ok: false, detail: `${target} is not on a mounted filesystem (it is on /)` };
     }
-    return { ok: true, detail: `${target} (${entry.fsType} from ${entry.source})` };
+    const where = entry.mountPoint === target ? target : `${target} on ${entry.mountPoint}`;
+    if (opts.fstype && entry.fsType !== opts.fstype) {
+      return { ok: false, detail: `${where} is ${entry.fsType}, expected ${opts.fstype}` };
+    }
+    return { ok: true, detail: `${where} (${entry.fsType} from ${entry.source})` };
   };
 
 /**

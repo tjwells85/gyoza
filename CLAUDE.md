@@ -578,6 +578,8 @@ Before considering the initial implementation complete:
 - [ ] `(ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)` uses the `server/.env`
       value, falls back to the `server/env.ts` default, and fails naming the var when
       neither is set
+- [ ] `check.mounted('/mnt/apps/my-app')` passes when the share is mounted at
+      `/mnt/apps`, and fails when the deepest mount above the path is `/`
 - [ ] `check.freeSpace` / `check.mounted` against a hung NFS share fail within the
       timeout instead of hanging
 - [ ] `gyoza generate env` with a stub `vite.config.ts` + `rsbuild.config.ts` and only
@@ -1105,6 +1107,11 @@ in `src/checks.ts`, exported as `check`). User docs: [docs/deploy.md](docs/deplo
   as `X is not set in server/.env`, not as a check against `undefined`. It only throws
   for `UPPER_CASE` keys. `then`, `toJSON` and the rest still read as `undefined`,
   otherwise awaiting or serializing the object would throw.
+- **`mounted` means "on a mounted filesystem", not "is a mount point".** Storage
+  paths are almost always directories *inside* a share (`/mnt/apps/my-app` on
+  `/mnt/apps`), and an exact-match test failed exactly that case. `findContainingMount`
+  works like `findmnt -T`, and only `/` as the containing mount fails. It never
+  `realpath`s, because that would touch a possibly hung mount.
 - **A check may return a check** (`(ctx) => check.mounted(…)`), which is run with
   the same ctx. This is one level only, and a third level is a failure. That's
   why the env-reading form needed no new shape.

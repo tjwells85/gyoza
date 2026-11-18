@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.15.1] - 2026-11-17
+
+### Fixed
+
+- `check.mounted` failed on a directory inside a mounted share. For example,
+  `/mnt/apps/image-organizer` on an NFS share mounted at `/mnt/apps` reported
+  "is not a mount point", because the path had to be the mount point itself
+  - The check now passes for any path on a mounted filesystem, the same answer
+    `findmnt -T` gives. It fails only when the deepest mount above the path is
+    `/`, which is what happens when the share isn't mounted
+  - `fstype` is checked against that containing mount
+  - The report names the containing mount, e.g.
+    `/mnt/apps/image-organizer on /mnt/apps (nfs4 from 10.13.1.2:/AppStorage)`
+- Mount sources with escaped characters showed them raw. A source such as
+  `C:\` was printed as `C:\134`
+
 ## [0.15.0] - 2026-11-17
 
 ### Added

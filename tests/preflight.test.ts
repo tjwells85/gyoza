@@ -25,6 +25,7 @@ import type {
 } from '../src/preflight.ts';
 import {
   check,
+  findContainingMount,
   findListenerPids,
   findMount,
   formatBytes,
@@ -577,8 +578,9 @@ describe('mountinfo', () => {
     expect(parseMountinfo(info)[1]).toEqual({ mountPoint: '/mnt/media', fsType: 'nfs4', source: 'nas:/export/media' });
   });
 
-  test('decodes octal escapes in paths', () => {
+  test('decodes octal escapes in paths and sources', () => {
     expect(findMount(parseMountinfo(info), '/mnt/my share')?.fsType).toBe('cifs');
+    expect(parseMountinfo('70 22 0:60 / /mnt/c rw - 9p C:\\134 rw')[0]?.source).toBe('C:\\');
   });
 
   test('the last mount over a path wins', () => {
@@ -587,6 +589,47 @@ describe('mountinfo', () => {
 
   test('a plain directory is not a mount', () => {
     expect(findMount(parseMountinfo(info), '/mnt')).toBeUndefined();
+  });
+});
+
+describe('findContainingMount', () => {
+  // The reported layout: the NFS share is mounted at /mnt/apps, the app's storage
+  // is a directory inside it.
+  const entries = parseMountinfo(
+    [
+      '22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw',
+      '23 22 8:2 / /home rw,relatime shared:2 - ext4 /dev/sda2 rw',
+      '40 22 0:45 / /mnt/apps rw,relatime shared:20 - nfs4 10.13.1.2:/AppStorage rw,vers=4.1',
+    ].join('\n'),
+  );
+
+  test('a directory inside a share resolves to the share', () => {
+    expect(findContainingMount(entries, '/mnt/apps/image-organizer')).toMatchObject({
+      mountPoint: '/mnt/apps',
+      fsType: 'nfs4',
+    });
+  });
+
+  test('the mount point itself resolves to itself', () => {
+    expect(findContainingMount(entries, '/mnt/apps')?.mountPoint).toBe('/mnt/apps');
+  });
+
+  test('a sibling sharing a name prefix is not inside the share', () => {
+    expect(findContainingMount(entries, '/mnt/apps-backup')?.mountPoint).toBe('/');
+  });
+
+  test('a path with no deeper mount falls back to /', () => {
+    expect(findContainingMount(entries, '/mnt/other/dir')?.mountPoint).toBe('/');
+  });
+
+  test('the deepest mount wins, and a later mount over the same point wins', () => {
+    const stacked = [
+      ...entries,
+      { mountPoint: '/mnt/apps/cache', fsType: 'tmpfs', source: 'tmpfs' },
+      { mountPoint: '/mnt/apps', fsType: 'cifs', source: '//nas/apps' },
+    ];
+    expect(findContainingMount(stacked, '/mnt/apps/cache/x')?.fsType).toBe('tmpfs');
+    expect(findContainingMount(stacked, '/mnt/apps/image-organizer')?.fsType).toBe('cifs');
   });
 });
 
