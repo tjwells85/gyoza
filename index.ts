@@ -37,6 +37,7 @@ export type {
   PreflightExec,
   ProjectEnv,
   SingleDep,
+  VersionProbeFn,
   VersionSpec,
 } from './src/preflight.ts';
 export type { Command, CommandFlag, CommandGroup, GyozaNode } from './src/gyoza.ts';

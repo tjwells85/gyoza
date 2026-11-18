@@ -49,9 +49,10 @@ it from.
 3. **Install.** Runs `bun install` only if `bun.lock` is among the pulled changes.
    If that install changed gyoza's own version, the rest of the deploy is handed
    to the newly installed gyoza (see [Self-update during a deploy](#self-update-during-a-deploy)).
-4. **Server preflight.** Runs `deploy.preflight`, if it is configured: required
-   software and server-state checks (see [Server preflight](#server-preflight)).
-   A failing check stops the deploy here, so the **old service keeps running**.
+4. **Server preflight.** Runs `deploy.preflight`, if it is configured: what the
+   OS must provide for the app (see [Server preflight](#server-preflight)). When
+   `deploy.service` is set, gyoza adds its own restart checks. A failing check
+   stops the deploy here, so the **old service keeps running**.
 5. **Migrate.** Runs `deploy.migrate` (see below).
 6. **Build.** Runs `gyoza build` in-process. A build failure stops the deploy here,
    so the **old service keeps running**.
@@ -104,14 +105,38 @@ non-interactive shell (CI, a systemd oneshot, a git hook) it cannot prompt, so i
 
 ## Server preflight
 
-`deploy.preflight` lists what the server needs before this project can be
-migrated, built and restarted. It has two parts:
+`deploy.preflight` answers one question: **can this server run the app?** It
+checks what the operating system has to provide and the app can't provide for
+itself, before anything is migrated, built or restarted.
 
-- `deps`: external software, such as postgres, redis or valkey, or a system
-  library.
-- `checks`: server state, such as a mounted share, free space or a free port.
+It has two parts:
 
-The common cases each take one line.
+- `deps`: software the host provides. That can be a binary, a system library, or
+  an external service such as postgres or valkey, checked for presence and version.
+- `checks`: the state of the host, such as a mounted share, a writable directory
+  or free space.
+
+### What belongs in a preflight
+
+Ask what the fix would be if the entry failed. When the fix is on the server
+(install a package, mount a share, free some disk, upgrade postgres), the entry
+belongs. When the fix is a change to the repo, it doesn't.
+
+| Belongs | Doesn't belong |
+| --- | --- |
+| A binary or library the app or its build calls: `ffmpeg`, `unzip`, `libheif`, `cargo` | Settings the app depends on *inside* a service: redis `maxmemory-policy`, postgres `max_connections`, a database role's privileges |
+| A minimum version of an external service: postgres `>=18`, valkey `>=7.2` | Anything the migrations create, such as postgres extensions or tables. A migration that can't run fails at the migrate step with the database's own error, before anything else changes |
+| A storage path is mounted, writable and has room | Env variables. The app's `server/env.ts` already validates them at startup |
+| A runtime plugin whose absence only shows up later, in production (an HEVC decoder for libheif) | Feature toggles or optional integrations. The app decides whether they are on |
+| | The app's own port, units, sudo rights, git state or bun. gyoza checks what it needs itself (see [Checks gyoza runs itself](#checks-gyoza-runs-itself)) |
+
+Build tools such as `cargo` or a C compiler do belong, even though the build
+would fail without them anyway. Migrations run before the build, so without the
+preflight a missing compiler is found only after the schema has already moved.
+
+A preflight is usually a dozen one-line entries. If it needs helper functions,
+client libraries or caches, it is probably checking how the app is configured,
+not what the OS provides.
 
 ```ts
 import { check, defineConfig } from 'gyoza';
@@ -121,26 +146,29 @@ export default defineConfig({
     service: 'app',
     preflight: {
       deps: {
-        postgres: { command: 'psql', version: '>=15' },
-        bun:      { version: '>=1.3' },            // command defaults to the key
-        cache: {
-          anyOf: {                                  // redis OR valkey
-            redis:  { command: 'redis-server',  version: '>=7' },
-            valkey: { command: 'valkey-server', version: '>=7.2' },
+        // External services: ask the running server for its version (see Versions)
+        postgres: {
+          command: 'psql',
+          version: { range: '>=18', probe: (ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version'] },
+        },
+        valkey: {
+          command: 'valkey-cli',
+          version: {
+            range: '>=7.2',
+            probe: (ctx) => ['valkey-cli', '-u', ctx.serverEnv.REDIS_URL, 'INFO', 'server'],
+            match: 'redis_version:{version}',
           },
         },
-        libheif: { pkgConfig: 'libheif', version: '>=1.16', onFail: 'warn' },
-        vips:    { library: 'libvips' },
+        // Host software
+        ffmpeg:  { version: '>=6' },               // command defaults to the key
+        unzip:   {},                               // presence only
+        libheif: { pkgConfig: 'libheif', version: '>=1.16' },
+        vips:    { library: 'libvips', onFail: 'warn' },
       },
       checks: {
-        media: check.mounted('/mnt/media'),
-        space: { run: check.freeSpace('/mnt/media', '20GB'), onFail: 'warn' },
-        port:  check.portFree(3000),
-        pg:    check.serviceActive('postgresql'),
-        uploads: {
-          name: 'Uploads writable',
-          run: async ({ exec }) => (await exec('test -w /mnt/media/uploads')).exitCode === 0,
-        },
+        media:    (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT),
+        writable: (ctx) => check.writable(ctx.serverEnv.STORAGE_ROOT),
+        space:    { run: (ctx) => check.freeSpace(ctx.serverEnv.STORAGE_ROOT, '20GB'), onFail: 'warn' },
       },
     },
   },
@@ -206,9 +234,47 @@ weird: {
 
 `get: (ctx) => string | undefined` is the last resort: return the version yourself.
 
-> **The postgres server vs `psql`.** `psql --version` is the **client** version. To
-> check the server, query it:
-> `version: { range: '>=15', probe: 'psql "$DATABASE_URL" -tAc "show server_version"' }`.
+### External services: probe the server, not the client
+
+`psql --version` and `valkey-cli --version` report the **client** installed on
+this host. That says nothing about the server the app connects to, which may be
+on another machine. To check the server, make `probe` a function that builds the
+command from the app's own connection URL:
+
+```ts
+postgres: {
+  command: 'psql',            // the client must be installed here
+  version: {
+    range: '>=18',
+    probe: (ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version'],
+  },
+},
+valkey: {
+  command: 'valkey-cli',      // or redis-cli
+  version: {
+    range: '>=7.2',
+    probe: (ctx) => ['valkey-cli', '-u', ctx.serverEnv.REDIS_URL, 'INFO', 'server'],
+    match: 'redis_version:{version}',
+  },
+},
+```
+
+- One entry proves three things: the client is installed, the server is reachable,
+  and the server is new enough. No separate "is it running" check is needed.
+- Return an **array**. It is spawned without a shell, so a URL needs no quoting.
+  A returned string runs through `sh -c`, the same as a string `probe`.
+- A custom probe has to **exit 0**. A failed connection fails the dep with the
+  first line of the error. It is never read as a version, even though an IP
+  address such as `10.0.0.5` looks like one.
+- Passwords in `scheme://user:password@host` URLs are masked as `***` in the
+  report. While the probe runs, its command line is visible to other users in
+  `ps`. On a shared host, keep the password in `~/.pgpass` or the client's own
+  config instead of the URL.
+- Valkey reports a redis-compatible `redis_version` (7.2.4 for valkey 8), which
+  is what redis clients such as BullMQ compare against. Match on
+  `valkey_version:{version}` to check valkey's own version instead.
+- The `.env` variable must be set. Otherwise the dep fails as
+  `DATABASE_URL is not set in server/.env`.
 
 An invalid range is a config error. gyoza checks ranges itself, because
 `Bun.semver.satisfies` treats an unparseable range as a match.
@@ -224,16 +290,40 @@ and `anyOf` can't be nested.
 | Check | Passes when |
 | --- | --- |
 | `check.mounted(path, { fstype? })` | `path` is on a mounted filesystem: a mount point itself, or anywhere inside one (`/mnt/apps/my-app` on a share mounted at `/mnt/apps`). It fails when the deepest mount above `path` is `/`, which is where the path ends up when the share isn't mounted. `fstype` (e.g. `'nfs4'`) is checked against that containing mount, and is worth setting when `/mnt` itself is a separate local disk. Reads `/proc/self/mountinfo` and never touches the mount, so a hung share can't hang the deploy. Symlinks aren't resolved, so pass the real path |
+| `check.writable(path)` | `path` is a directory the deploy user can write to. Runs `test` with a timeout, so a hung share fails instead of hanging. Pair it with `mounted` for a share: an unmounted share's empty mount point can still be writable |
 | `check.freeSpace(path, '20GB')` | at least that much is free, via `df` with a timeout. `KB`/`MB`/`GB`/`TB` are decimal, `K`/`G`/`GiB` are binary, and a number is bytes |
 | `check.portFree(3000)` | nothing *else* listens on the TCP port (see below) |
-| `check.serviceActive('postgresql')` | `systemctl is-active` reports `active` |
+| `check.serviceActive('postgresql')` | `systemctl is-active` reports `active`. Only for a service on this host. A version probe against the server already proves it is up |
 | `check.commandSucceeds('…')` | the command exits 0 |
 
-`portFree` treats the service being deployed as expected. The old process is still
+`portFree` is for a port some *other* software on the host must leave free. The
+app's own `PORT` rarely needs it: a conflict there shows up as soon as the
+service starts. It treats the service being deployed as expected. The old process is still
 running and still holds its port, so a listener inside one of the `deploy.service`
 units passes. `ss` shows process IDs only for processes the deploy user owns. When
 the listener isn't visible and a `deploy.service` unit is active, gyoza assumes the
 listener is that unit, and the report line says so.
+
+### Checks gyoza runs itself
+
+When `deploy.service` is set, every preflight ends with two checks of gyoza's
+own. They run even when `deploy.preflight` is not configured, and
+`--skip-preflight` skips them too. Don't add them to the config.
+
+| Check | Passes when | On failure |
+| --- | --- | --- |
+| `systemd units` | every `deploy.service` unit is `loaded`: its unit file exists and systemd has read it | `fail`. A typo or an uninstalled unit makes the restart fail, and without this check that would happen only after migrate and build |
+| `sudo restart` | `sudo -n -l systemctl restart <units…>` succeeds, so the exact restart gyoza runs needs no password. Passes when gyoza runs as root | `fail` without a TTY, where a password prompt would make the restart fail. `warn` in an interactive shell, where you can type the password |
+
+```text
+🔎  Preflight
+  ✓ postgres       18.1 (>=18)
+  ✓ systemd units  app.service, worker.service
+  ✓ sudo restart   no password needed for systemctl restart app.service worker.service
+```
+
+gyoza also checks the git state, the `deploy` config and `bun install` as part of
+the deploy itself, so a preflight never needs to.
 
 ### Custom checks
 
@@ -259,9 +349,9 @@ Paths, ports and hosts often live in the project's `.env` rather than in
 
 ```ts
 checks: {
-  media: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT),
-  space: { run: (ctx) => check.freeSpace(ctx.serverEnv.STORAGE_ROOT, '20GB'), onFail: 'warn' },
-  port:  (ctx) => check.portFree(Number(ctx.serverEnv.PORT)),
+  media:    (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT),
+  writable: (ctx) => check.writable(ctx.serverEnv.STORAGE_ROOT),
+  space:    { run: (ctx) => check.freeSpace(ctx.serverEnv.STORAGE_ROOT, '20GB'), onFail: 'warn' },
 },
 ```
 
@@ -325,6 +415,10 @@ to the restart, e.g.:
 deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart app.service
 ```
 
+With several units, the entry must match the single command gyoza runs
+(`systemctl restart app.service worker.service`). The preflight's `sudo restart`
+check tests that exact command line, so a mismatch is caught before migrating.
+
 ---
 
 ## Self-update during a deploy
@@ -385,6 +479,7 @@ the no-restart confirmation already happened, so it doesn't repeat them.
 | `deploy.service` / `deploy.migrate` unset in a non-interactive shell | Exit 1 naming the field and `--yes` |
 | `git pull --ff-only` is not a fast-forward | Exit 1 — resolve the divergence manually |
 | A `deploy.preflight` entry with `onFail: 'fail'` (the default) fails | Exit 1 after every check has run. Nothing is migrated, built or restarted |
+| A `deploy.service` unit isn't loaded, or the restart would need a password with no TTY | Exit 1 at the preflight, before migrate |
 | `deploy.preflight` is malformed (invalid range, two sources, …) | Exit 1 before anything is pulled |
 | `bun install`, the migration, or `sudo systemctl restart` fails | Exit 1 at that step |
 | `gyoza build` fails | Exit 1 — the service is **not** restarted, old process keeps serving |

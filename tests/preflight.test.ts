@@ -11,6 +11,7 @@ import {
   findLibrary,
   hasPreflight,
   isValidRange,
+  redactUrls,
   reportPreflight,
   satisfiesRange,
   strictEnv,
@@ -32,7 +33,10 @@ import {
   parseDfAvail,
   parseMountinfo,
   parseSize,
+  restartChecks,
+  sudoRestart,
   unitFromCgroup,
+  unitsLoaded,
 } from '../src/checks.ts';
 
 // ---------------------------------------------------------------------------
@@ -201,6 +205,41 @@ describe('evaluatePreflight deps', () => {
       fakeEnv({}),
     );
     expect(outcome).toMatchObject({ ok: true, detail: '16.1 (>=15)' });
+  });
+
+  describe('a probe built from ctx (remote services)', () => {
+    const url = 'postgres://app:s3cret@db.internal:5432/app';
+    const pg = (probe: (ctx: PreflightContext) => string[]): PreflightConfig => ({
+      deps: { postgres: { command: 'psql', version: { range: '>=18', probe } } },
+    });
+    const psqlArgv = (ctx: PreflightContext): string[] => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version'];
+
+    test('checks the server version, not the client', async () => {
+      const exec = fakeExec({ [`psql -d ${url} -tAc show server_version`]: ok('18.1 (Debian 18.1-1.pgdg13+1)\n') });
+      const [outcome] = await evaluatePreflight(pg(psqlArgv), ctxWith(exec, [], { DATABASE_URL: url }), fakeEnv({ psql: '/usr/bin/psql' }));
+      expect(outcome).toMatchObject({ ok: true, detail: '18.1 (>=18)' });
+    });
+
+    test('a failed connection fails, even though its IP address looks like a version', async () => {
+      const exec = fakeExec({
+        [`psql -d ${url} -tAc show server_version`]: exit(2, 'psql: error: connection to server at "10.20.0.5", port 5432 failed'),
+      });
+      const [outcome] = await evaluatePreflight(pg(psqlArgv), ctxWith(exec, [], { DATABASE_URL: url }), fakeEnv({ psql: '/usr/bin/psql' }));
+      expect(outcome?.ok).toBe(false);
+      expect(outcome?.detail).toContain('exit 2');
+      expect(outcome?.detail).not.toContain('s3cret');
+      expect(outcome?.detail).toContain('postgres://app:***@db.internal');
+    });
+
+    test('an unset env var fails the dep, naming the var', async () => {
+      const [outcome] = await evaluatePreflight(pg(psqlArgv), ctxWith(fakeExec({})), fakeEnv({ psql: '/usr/bin/psql' }));
+      expect(outcome).toMatchObject({ ok: false, detail: 'DATABASE_URL is not set in server/.env' });
+    });
+
+    test('an empty command from the function fails', async () => {
+      const [outcome] = await evaluatePreflight(pg(() => []), ctxWith(fakeExec({})), fakeEnv({ psql: '/usr/bin/psql' }));
+      expect(outcome?.detail).toContain('version.probe() must return');
+    });
   });
 
   test('a probe with no version in its output fails with the first line', async () => {
@@ -516,11 +555,16 @@ describe('validatePreflightConfig', () => {
         vips: { library: 'libvips' },
         weird: { command: 'mytool', version: { range: '>=2', probe: ['mytool', 'info'], match: 'Build {version} (' } },
         custom: { exists: () => true, version: { range: '>=1', get: () => '1.0' } },
+        remote: { command: 'valkey-cli', version: { range: '>=7.2', probe: (ctx) => ['valkey-cli', '-u', ctx.serverEnv.REDIS_URL, 'INFO', 'server'] } },
       },
       checks: { a: () => true, b: { run: () => true, onFail: 'warn' } },
     };
     expect(diagnose(config)).toEqual([]);
     expect(diagnose(undefined)).toEqual([]);
+  });
+
+  test('rejects a probe that is neither a command nor a function', () => {
+    expect(diagnose({ deps: { x: { version: { range: '>=1', probe: 42 } } } })[0]).toContain('or a function returning one');
   });
 
   test('rejects an invalid range', () => {
@@ -733,5 +777,65 @@ describe('check factories', () => {
       ok: false,
       detail: '`test -w /mnt/media` exited 1: denied',
     });
+  });
+
+  test('writable: missing, read-only, writable', async () => {
+    const missing = fakeExec({ 'test -d /mnt/media': exit(1) });
+    expect(await check.writable('/mnt/media')(ctxWith(missing))).toEqual({
+      ok: false,
+      detail: '/mnt/media does not exist or is not a directory',
+    });
+
+    const readOnly = fakeExec({ 'test -d /mnt/media': ok(''), 'test -w /mnt/media': exit(1) });
+    expect(await check.writable('/mnt/media')(ctxWith(readOnly))).toMatchObject({ ok: false });
+
+    const fine = fakeExec({ 'test -d /mnt/media': ok(''), 'test -w /mnt/media': ok('') });
+    expect(await check.writable('/mnt/media')(ctxWith(fine))).toEqual({ ok: true, detail: '/mnt/media is writable' });
+  });
+
+  test('writable reports a hung mount', async () => {
+    const exec = fakeExec({ 'test -d /mnt/media': timedOut });
+    expect(await check.writable('/mnt/media')(ctxWith(exec))).toMatchObject({ ok: false, detail: '/mnt/media timed out — is the mount hung?' });
+  });
+});
+
+describe('redactUrls', () => {
+  test('masks the password in URLs, and nothing else', () => {
+    expect(redactUrls('psql -d postgres://app:s3cret@db/app')).toBe('psql -d postgres://app:***@db/app');
+    expect(redactUrls('redis-cli -u redis://:pw@cache:6379')).toBe('redis-cli -u redis://:***@cache:6379');
+    expect(redactUrls('postgres://app@db/app http://host:8080/a@b')).toBe('postgres://app@db/app http://host:8080/a@b');
+  });
+});
+
+describe('restart checks', () => {
+  const units = ['app.service', 'worker.service'];
+  const show = (unit: string): string => `systemctl show --property=LoadState --value ${unit}`;
+  const sudo = 'sudo -n -l systemctl restart app.service worker.service';
+
+  test('unitsLoaded names each unit that is not loaded', async () => {
+    const exec = fakeExec({ [show('app.service')]: ok('loaded\n'), [show('worker.service')]: ok('not-found\n') });
+    expect(await unitsLoaded(units)(ctxWith(exec))).toEqual({ ok: false, detail: 'worker.service is not-found' });
+
+    const all = fakeExec({ [show('app.service')]: ok('loaded\n'), [show('worker.service')]: ok('loaded\n') });
+    expect(await unitsLoaded(units)(ctxWith(all))).toEqual({ ok: true, detail: 'app.service, worker.service' });
+  });
+
+  test('sudoRestart checks the exact command gyoza runs', async () => {
+    expect(await sudoRestart(units, { root: false })(ctxWith(fakeExec({ [sudo]: ok('/usr/bin/systemctl restart …\n') })))).toMatchObject({
+      ok: true,
+    });
+    const denied = await sudoRestart(units, { root: false })(ctxWith(fakeExec({ [sudo]: exit(1, 'sudo: a password is required') })));
+    expect(denied).toMatchObject({ ok: false });
+    expect((denied as { detail: string }).detail).toContain('NOPASSWD');
+  });
+
+  test('sudoRestart passes as root without calling sudo', async () => {
+    expect(await sudoRestart(units, { root: true })(ctxWith(fakeExec({})))).toEqual({ ok: true, detail: 'running as root' });
+  });
+
+  test('a password prompt fails only without a TTY; a missing unit always fails', () => {
+    expect(restartChecks(units, { interactive: true, root: false }).sudo?.onFail).toBe('warn');
+    expect(restartChecks(units, { interactive: false, root: false }).sudo?.onFail).toBe('fail');
+    expect(restartChecks(units, { interactive: true, root: false }).units?.onFail).toBeUndefined();
   });
 });

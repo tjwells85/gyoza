@@ -21,9 +21,15 @@ defineConfig({
         vips: { library: 'libvips' },
         weird: { command: 'mytool', version: { range: '>=2', probe: ['mytool', 'info'], match: /Build (\S+)/ } },
         custom: { exists: async () => true, version: { range: '>=1', get: async ({ exec }) => (await exec('x')).stdout } },
+        remote: {
+          command: 'psql',
+          version: { range: '>=18', probe: (ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version'] },
+        },
+        remoteAsync: { command: 'valkey-cli', version: { range: '>=7.2', probe: async () => 'valkey-cli INFO server' } },
       },
       checks: {
         media: check.mounted('/mnt/media'),
+        uploads: (ctx) => check.writable(ctx.serverEnv.STORAGE_ROOT),
         space: { run: check.freeSpace('/mnt/media', '20GB'), onFail: 'warn' },
         port: check.portFree(3000),
         custom: { name: 'Uploads writable', run: async ({ exec }) => (await exec('test -w /mnt/media')).exitCode === 0 },

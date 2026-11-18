@@ -3,8 +3,9 @@ import type { PackageJson } from 'type-fest';
 import { loadConfig, validateDeployConfig } from '../config.ts';
 import type { DeployConfig, DeployMigrateContext } from '../config.ts';
 import type { CommandFlag } from '../gyoza.ts';
-import { createExec, hasPreflight, runPreflight } from '../preflight.ts';
-import type { PreflightSummary } from '../preflight.ts';
+import { restartChecks } from '../checks.ts';
+import { createExec, evaluatePreflight, hasPreflight, reportPreflight } from '../preflight.ts';
+import type { PreflightContext, PreflightSummary } from '../preflight.ts';
 import { loadProjectEnv } from '../projectEnv.ts';
 import { confirm } from '../prompt.ts';
 import { compareVersions } from '../version.ts';
@@ -178,12 +179,21 @@ const describeMigrate = (migrate: DeployConfig['migrate'], sqlCount: number): st
 const describeService = (service: DeployConfig['service']): string =>
   service === undefined ? 'not configured — would prompt' : `sudo systemctl restart ${normalizeServices(service).join(' ')}`;
 
+/** Is there anything for the preflight step to run: project entries, or gyoza's restart checks? */
+const preflightConfigured = (deploy: DeployConfig): boolean =>
+  hasPreflight(deploy.preflight) || deploy.service !== undefined;
+
 const describePreflight = (deploy: DeployConfig, skip: boolean): string => {
-  if (!hasPreflight(deploy.preflight)) return 'not configured';
-  const deps = Object.keys(deploy.preflight.deps ?? {}).length;
-  const checks = Object.keys(deploy.preflight.checks ?? {}).length;
-  const counts = `${deps} dep${deps === 1 ? '' : 's'}, ${checks} check${checks === 1 ? '' : 's'}`;
-  return skip ? `skipped (--skip-preflight) — ${counts}` : `${counts} — results below`;
+  const parts: string[] = [];
+  if (hasPreflight(deploy.preflight)) {
+    const deps = Object.keys(deploy.preflight.deps ?? {}).length;
+    const checks = Object.keys(deploy.preflight.checks ?? {}).length;
+    parts.push(`${deps} dep${deps === 1 ? '' : 's'}, ${checks} check${checks === 1 ? '' : 's'}`);
+  }
+  if (deploy.service !== undefined) parts.push('restart checks');
+  if (parts.length === 0) return 'not configured';
+  const what = parts.join(' + ');
+  return skip ? `skipped (--skip-preflight) — ${what}` : `${what} — results below`;
 };
 
 /** Prints the plan and returns the refs the preflight context should describe. */
@@ -234,21 +244,27 @@ const printDryPlan = async (
   return refs;
 };
 
-/** Runs `deploy.preflight` against the server. `undefined` when nothing is configured. */
+/**
+ * Runs `deploy.preflight`, then gyoza's own restart checks when `deploy.service`
+ * is set. `undefined` when there is nothing to run.
+ */
 const runPreflightStep = async (
   cwd: string,
   deploy: DeployConfig,
   refs: DeployMigrateContext,
   heading: string,
 ): Promise<PreflightSummary | undefined> => {
-  if (!hasPreflight(deploy.preflight)) return undefined;
+  if (!preflightConfigured(deploy)) return undefined;
   console.log(`\n🔎  ${heading}`);
-  return runPreflight(deploy.preflight, {
-    ...refs,
-    ...loadProjectEnv(cwd),
-    services: deploy.service === undefined ? [] : normalizeServices(deploy.service),
-    exec: createExec(cwd),
-  });
+  const services = deploy.service === undefined ? [] : normalizeServices(deploy.service);
+  const ctx: PreflightContext = { ...refs, ...loadProjectEnv(cwd), services, exec: createExec(cwd) };
+
+  const outcomes = hasPreflight(deploy.preflight) ? await evaluatePreflight(deploy.preflight, ctx) : [];
+  if (services.length > 0) {
+    const builtins = restartChecks(services, { interactive: !nonInteractive(), root: process.getuid?.() === 0 });
+    outcomes.push(...(await evaluatePreflight({ checks: builtins }, ctx)));
+  }
+  return reportPreflight(outcomes);
 };
 
 const runMigrate = async (
@@ -346,8 +362,8 @@ const finishDeploy = async (
 ): Promise<void> => {
   const ctx: DeployMigrateContext = { projectRoot: cwd, changedFiles: diff.changedFiles, fromRef: before, toRef: after };
 
-  if (skipPreflight && hasPreflight(deploy.preflight)) {
-    console.warn('\n⚠  Skipping deploy.preflight (--skip-preflight).');
+  if (skipPreflight) {
+    if (preflightConfigured(deploy)) console.warn('\n⚠  Skipping deploy.preflight (--skip-preflight).');
   } else {
     const summary = await runPreflightStep(cwd, deploy, ctx, 'Preflight');
     if (summary && summary.failed > 0) {

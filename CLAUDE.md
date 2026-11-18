@@ -575,6 +575,14 @@ Before considering the initial implementation complete:
 - [ ] an invalid range (`'garbage'`), two sources, or `library` + `version` aborts
       before the pull
 - [ ] `check.portFree(<service port>)` passes while the service being deployed is up
+- [ ] with `deploy.service` set and no `deploy.preflight`, the preflight still runs
+      `systemd units` and `sudo restart`; a typo'd unit fails before migrate
+- [ ] `sudo restart` fails without a TTY and warns with one when NOPASSWD doesn't
+      cover `systemctl restart <all units>`; passes as root
+- [ ] a `probe: (ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, …]` dep reports
+      the server version; a down server fails (never passes on an IP in the error)
+      and the report masks the URL password
+- [ ] `check.writable(path)` fails on a missing or read-only directory
 - [ ] `(ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)` uses the `server/.env`
       value, falls back to the `server/env.ts` default, and fails naming the var when
       neither is set
@@ -1072,6 +1080,12 @@ Project-defined `deps` (software: `command` / `pkgConfig` / `library` / `exists`
 sources, semver `version`, `anyOf` alternatives) and `checks` (server state; built-ins
 in `src/checks.ts`, exported as `check`). User docs: [docs/deploy.md](docs/deploy.md#server-preflight).
 
+**Scope: can this OS run the app.** Host software, external service versions,
+storage. Not app settings inside a service, not what migrations create, not env
+validation. The docs' "What belongs" table is the contract. New built-ins should
+serve that scope. When every project would write the same check because gyoza
+itself needs it, gyoza runs it instead (`restartChecks`), not the config.
+
 - **Runs first in `finishDeploy`**, i.e. after `bun install`. On a handoff the
   *new* gyoza runs it, and the resume path needs no special case. Not before install:
   that would run the old gyoza's preflight code against the new config.
@@ -1115,6 +1129,22 @@ in `src/checks.ts`, exported as `check`). User docs: [docs/deploy.md](docs/deplo
 - **A check may return a check** (`(ctx) => check.mounted(…)`), which is run with
   the same ctx. This is one level only, and a third level is a failure. That's
   why the env-reading form needed no new shape.
+- **`restartChecks` (`systemd units`, `sudo restart`) run whenever `deploy.service`
+  is set**, after the project's entries, even with no `deploy.preflight`. Both
+  catch a restart that would fail *after* migrate and build. `sudo -n -l` tests the
+  exact multi-unit command line gyoza runs. It is `fail` without a TTY and `warn`
+  with one (a password can be typed), and passes outright as root. `--skip-preflight`
+  skips them too.
+- **`version.probe` may be a function of ctx**, for remote services
+  (`psql -d <url> -tAc 'show server_version'`). This replaced a proposed
+  `command.flags` object: flags can't fix `--version` reporting the *client*, and an
+  argv array already covers boolean flags, order and quoting. Probe env is
+  `process.env`, not `serverEnv`. Use the function form to reach `.env` values.
+- **A custom probe must exit 0.** A failed connection prints an IP address, which
+  `DEFAULT_VERSION` would read as a version (`10.0.0.5` satisfies `>=6`). The
+  default `--version` probe is exempt, since some tools exit non-zero on it.
+- **`describeCmd` masks URL passwords** (`redactUrls`). Probe command lines now
+  carry connection URLs and are printed in the deploy log.
 - `--dry` runs the pre-pull preflight (checks are read-only by contract) and exits 0.
 - `--skip-preflight` is forwarded on a handoff only to a child at or above
   `PREFLIGHT_SINCE` (`handoffArgs`); an older child would reject it, and has no

@@ -361,7 +361,7 @@ export default defineConfig({
 | --- | --- | --- | --- |
 | `migrate` | `string` or `(ctx: DeployMigrateContext) => unknown` | none — prompts | DB migration step. A string is run as `bun run <name>`; a callback is awaited. Runs on every deploy |
 | `service` | `string` or `string[]` | none — prompts | systemd unit(s) restarted with `sudo systemctl restart`. Names without a `.` get `.service` appended; an array restarts all in one call |
-| `preflight` | `{ deps?, checks? }` | none | Required software and server-state checks. Runs after the pull and install, before migrate. See [Server preflight](deploy.md#server-preflight) |
+| `preflight` | `{ deps?, checks? }` | none | What the OS must provide for the app: software, service versions, storage. Not app settings. Runs after the pull and install, before migrate. See [Server preflight](deploy.md#server-preflight) |
 
 ### `PreflightConfig`
 
@@ -381,7 +381,12 @@ type PreflightDep =
 
 type VersionSpec =
   | string                                         // semver range, e.g. '>=15'
-  | { range: string; probe?: string | string[]; match?: string | RegExp; get?: (ctx) => string | undefined };
+  | {
+      range: string;
+      probe?: string | string[] | ((ctx) => string | string[]);  // a function can read ctx.serverEnv
+      match?: string | RegExp;
+      get?: (ctx) => string | undefined;
+    };
 
 // A result, or another check to run with the same ctx: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)
 type PreflightCheckFn = (ctx: PreflightContext) =>
@@ -398,8 +403,10 @@ interface PreflightContext extends DeployMigrateContext {
 ```
 
 `onFail` defaults to `'fail'`. Built-in checks are exported as `check`:
-`check.mounted`, `check.freeSpace`, `check.portFree`, `check.serviceActive` and
-`check.commandSucceeds`.
+`check.mounted`, `check.writable`, `check.freeSpace`, `check.portFree`,
+`check.serviceActive` and `check.commandSucceeds`. When `deploy.service` is set,
+gyoza also checks that the units exist and that sudo allows the restart. Don't add
+those yourself.
 
 ### `DeployMigrateContext`
 
@@ -473,11 +480,15 @@ export default defineConfig({
     service: ['app', 'worker'],
     preflight: {
       deps: {
-        postgres: { command: 'psql', version: '>=15' },
-        cache: { anyOf: { redis: { command: 'redis-server' }, valkey: { command: 'valkey-server' } } },
+        postgres: {
+          command: 'psql',
+          version: { range: '>=18', probe: (ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version'] },
+        },
+        ffmpeg: { version: '>=6' },
       },
       checks: {
         media: check.mounted('/mnt/media'),
+        writable: check.writable('/mnt/media'),
         space: { run: check.freeSpace('/mnt/media', '20GB'), onFail: 'warn' },
       },
     },

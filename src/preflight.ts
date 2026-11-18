@@ -59,6 +59,9 @@ export interface PreflightCheck {
   onFail?: CheckAction;
 }
 
+/** Builds a version probe from the context. An array is spawned as-is, so values need no quoting. */
+export type VersionProbeFn = (ctx: PreflightContext) => string | string[] | Promise<string | string[]>;
+
 /**
  * A semver range (`'>=15'`, `'>=7 <9'`), or an object to override how the
  * installed version is found.
@@ -67,8 +70,12 @@ export type VersionSpec =
   | string
   | {
       range: string;
-      /** Replaces the default probe. A string runs through `sh -c`. */
-      probe?: string | string[];
+      /**
+       * Replaces the default probe. A string runs through `sh -c`. A function builds
+       * the command from the context, e.g. to ask a remote server for its version:
+       * `(ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version']`.
+       */
+      probe?: string | string[] | VersionProbeFn;
       /**
        * Where the version sits in the probe output: a template with a `{version}`
        * marker (`'Build {version} ('`), or a RegExp whose first capture group is
@@ -336,7 +343,17 @@ interface DepResult {
 
 const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? '';
 
-const describeCmd = (cmd: string | string[]): string => (typeof cmd === 'string' ? cmd : cmd.join(' '));
+/**
+ * Masks the password in a `scheme://user:password@host` URL. Probes now take
+ * connection URLs from `.env`, and their command line ends up in the deploy log.
+ */
+export const redactUrls = (text: string): string => text.replace(/(\/\/[^:/@\s]*:)[^@\s/]+@/g, '$1***@');
+
+export const describeCmd = (cmd: string | string[]): string => redactUrls(typeof cmd === 'string' ? cmd : cmd.join(' '));
+
+const isCommand = (value: unknown): value is string | string[] =>
+  (typeof value === 'string' && value.trim() !== '') ||
+  (Array.isArray(value) && value.length > 0 && value.every((p) => typeof p === 'string' && p !== ''));
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -393,16 +410,25 @@ const evaluateSingleDep = async (
     version = await spec.get(ctx);
     if (version === undefined) return { ok: false, detail: 'version.get() could not determine a version' };
   } else {
-    const probe = spec.probe ?? located.probe;
+    const probe = typeof spec.probe === 'function' ? await spec.probe(ctx) : (spec.probe ?? located.probe);
+    if (typeof spec.probe === 'function' && !isCommand(probe)) {
+      return { ok: false, detail: 'version.probe() must return a non-empty command string or string array' };
+    }
     if (!probe) return { ok: false, detail: 'no version probe — set version.probe or version.get' };
     const out = await ctx.exec(probe);
     if (out.timedOut) return { ok: false, detail: `\`${describeCmd(probe)}\` timed out` };
     if (out.notFound) return { ok: false, detail: `\`${describeCmd(probe)}\`: command not found` };
     const output = `${out.stdout}\n${out.stderr}`;
+    // A custom probe must succeed. Its failure output is often a connection error,
+    // whose IP address (`10.0.0.5`) the default match would read as a version.
+    // The default `--version` probe is let off, since some tools exit non-zero on it.
+    if (spec.probe !== undefined && out.exitCode !== 0) {
+      return { ok: false, detail: `\`${describeCmd(probe)}\`: exit ${out.exitCode} — ${redactUrls(firstLine(output)) || '(no output)'}` };
+    }
     version = extractVersion(output, spec.match);
     if (version === undefined) {
       const why = out.exitCode === 0 ? 'no version in output' : `exit ${out.exitCode}`;
-      return { ok: false, detail: `\`${describeCmd(probe)}\`: ${why} — ${firstLine(output) || '(no output)'}` };
+      return { ok: false, detail: `\`${describeCmd(probe)}\`: ${why} — ${redactUrls(firstLine(output)) || '(no output)'}` };
     }
   }
 
@@ -510,12 +536,6 @@ export const reportPreflight = (outcomes: PreflightOutcome[]): PreflightSummary 
   return { failed, warned };
 };
 
-export const runPreflight = async (
-  config: PreflightConfig,
-  ctx: PreflightContext,
-  env: PreflightEnv = defaultEnv,
-): Promise<PreflightSummary> => reportPreflight(await evaluatePreflight(config, ctx, env));
-
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -556,11 +576,8 @@ const validateVersion = (path: string, version: unknown, hasDefaultProbe: boolea
   validateRange(`${path}.range`, version.range, errors);
 
   const { probe, match, get } = version;
-  if (probe !== undefined) {
-    const validProbe =
-      (typeof probe === 'string' && probe.trim() !== '') ||
-      (Array.isArray(probe) && probe.length > 0 && probe.every((p) => typeof p === 'string' && p !== ''));
-    if (!validProbe) errors.push(`${path}.probe must be a non-empty command string or string array.`);
+  if (probe !== undefined && typeof probe !== 'function' && !isCommand(probe)) {
+    errors.push(`${path}.probe must be a non-empty command string, a string array, or a function returning one.`);
   }
   if (match !== undefined && !(match instanceof RegExp)) {
     if (typeof match !== 'string' || !match.includes(VERSION_MARKER)) {

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { resolve } from 'node:path';
-import type { CheckResult, PreflightCheckFn, PreflightContext } from './preflight.ts';
+import { describeCmd, redactUrls } from './preflight.ts';
+import type { CheckResult, PreflightCheck, PreflightCheckFn, PreflightContext } from './preflight.ts';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -231,13 +233,80 @@ const serviceActive =
 const commandSucceeds =
   (cmd: string | string[], opts: { timeoutMs?: number } = {}): PreflightCheckFn =>
   async (ctx) => {
-    const label = typeof cmd === 'string' ? cmd : cmd.join(' ');
+    const label = describeCmd(cmd);
     const out = await ctx.exec(cmd, opts);
     if (out.timedOut) return { ok: false, detail: `\`${label}\` timed out` };
     if (out.notFound) return { ok: false, detail: `\`${label}\`: command not found` };
     if (out.exitCode === 0) return { ok: true, detail: `\`${label}\` succeeded` };
-    return { ok: false, detail: `\`${label}\` exited ${out.exitCode}: ${firstLine(out.stderr || out.stdout)}` };
+    return { ok: false, detail: `\`${label}\` exited ${out.exitCode}: ${redactUrls(firstLine(out.stderr || out.stdout))}` };
+  };
+
+/**
+ * `path` is a directory the deploy user can write to. Uses `test` in a subprocess
+ * for the same reason as `freeSpace`: a hung share must time out, not block.
+ */
+const writable =
+  (path: string): PreflightCheckFn =>
+  async (ctx) => {
+    const isDir = await ctx.exec(['test', '-d', path]);
+    if (isDir.timedOut) return { ok: false, detail: `${path} timed out — is the mount hung?` };
+    if (isDir.notFound) return { ok: false, detail: 'test not found' };
+    if (isDir.exitCode !== 0) return { ok: false, detail: `${path} does not exist or is not a directory` };
+
+    const canWrite = await ctx.exec(['test', '-w', path]);
+    if (canWrite.timedOut) return { ok: false, detail: `${path} timed out — is the mount hung?` };
+    return canWrite.exitCode === 0
+      ? { ok: true, detail: `${path} is writable` }
+      : { ok: false, detail: `${path} is not writable by ${userInfo().username}` };
   };
 
 /** Built-in preflight checks for `deploy.preflight.checks`. */
-export const check = { mounted, freeSpace, portFree, serviceActive, commandSucceeds };
+export const check = { mounted, writable, freeSpace, portFree, serviceActive, commandSucceeds };
+
+// ---------------------------------------------------------------------------
+// Restart checks — gyoza's own, run whenever deploy.service is set
+// ---------------------------------------------------------------------------
+
+/** Every unit is `loaded`. A typo'd or uninstalled unit reads `not-found`. */
+export const unitsLoaded =
+  (units: string[]): PreflightCheckFn =>
+  async (ctx) => {
+    const problems: string[] = [];
+    for (const unit of units) {
+      const out = await ctx.exec(['systemctl', 'show', '--property=LoadState', '--value', unit]);
+      if (out.timedOut) return { ok: false, detail: 'systemctl timed out' };
+      if (out.notFound) return { ok: false, detail: 'systemctl not found' };
+      const state = out.stdout.trim() || firstLine(out.stderr) || 'unknown';
+      if (state !== 'loaded') problems.push(`${unit} is ${state}`);
+    }
+    return problems.length === 0 ? { ok: true, detail: units.join(', ') } : { ok: false, detail: problems.join(', ') };
+  };
+
+/** The exact restart command gyoza runs is allowed without a password. */
+export const sudoRestart =
+  (units: string[], { root }: { root: boolean }): PreflightCheckFn =>
+  async (ctx) => {
+    if (root) return { ok: true, detail: 'running as root' };
+    const cmd = ['sudo', '-n', '-l', 'systemctl', 'restart', ...units];
+    const out = await ctx.exec(cmd);
+    if (out.timedOut) return { ok: false, detail: 'sudo timed out' };
+    if (out.notFound) return { ok: false, detail: 'sudo not found' };
+    const restart = `systemctl restart ${units.join(' ')}`;
+    return out.exitCode === 0
+      ? { ok: true, detail: `no password needed for ${restart}` }
+      : { ok: false, detail: `sudo needs a password for ${restart} — add a NOPASSWD sudoers entry (docs/deploy.md#service-restart)` };
+  };
+
+/**
+ * The checks gyoza adds to every preflight when `deploy.service` is set, so no
+ * project has to write them. Both cover a restart that would otherwise fail
+ * *after* migrate and build. A password prompt only fails without a TTY,
+ * since an interactive deploy can still type the password.
+ */
+export const restartChecks = (
+  units: string[],
+  { interactive, root }: { interactive: boolean; root: boolean },
+): Record<string, PreflightCheck> => ({
+  units: { name: 'systemd units', run: unitsLoaded(units) },
+  sudo: { name: 'sudo restart', run: sudoRestart(units, { root }), onFail: interactive ? 'warn' : 'fail' },
+});

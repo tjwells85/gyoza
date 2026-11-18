@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.16.0] - 2026-11-18
+
+### Added
+
+- `gyoza deploy` checks its own restart before migrating. When `deploy.service`
+  is set, every preflight ends with two checks gyoza runs itself, even if
+  `deploy.preflight` isn't configured. Remove any copies of these from your
+  config. See [docs/deploy.md](docs/deploy.md#checks-gyoza-runs-itself)
+  - `systemd units`: every unit is loaded. A typo'd or uninstalled unit used to
+    fail the restart only after migrate and build
+  - `sudo restart`: the exact `systemctl restart <units…>` command needs no
+    password. Fails without a TTY, warns with one, and passes as root
+- `version.probe` can be a function of the context, so a dep can ask a remote
+  server for its version using the app's connection URL:
+  `probe: (ctx) => ['psql', '-d', ctx.serverEnv.DATABASE_URL, '-tAc', 'show server_version']`.
+  See [docs/deploy.md](docs/deploy.md#external-services-probe-the-server-not-the-client)
+- `check.writable(path)`: the path is a directory the deploy user can write to.
+  It runs with a timeout, so a hung share fails instead of hanging the deploy
+
+### Changed
+
+- A custom `version.probe` must exit 0. A failed connection used to be read for
+  a version, and an IP address in the error (`10.0.0.5`) could pass `>=6`. The
+  default `--version` probe still accepts a non-zero exit
+- Passwords in URLs (`postgres://user:***@host`) are masked in preflight
+  report lines
+
+### Docs
+
+- The Server preflight docs now open with what a preflight is for: what the OS
+  must provide for the app. Not settings inside a service, not what migrations
+  create, not env validation. The examples check a remote postgres server's
+  version instead of the local `psql` client's
+
 ## [0.15.1] - 2026-11-17
 
 ### Fixed
