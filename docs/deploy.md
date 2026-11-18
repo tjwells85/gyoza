@@ -40,15 +40,17 @@ it from.
    on a branch (not detached), and that the working tree is clean.
 2. **Pull.** `git pull --ff-only origin <current-branch>`. Fast-forward only — if
    the server checkout has diverged, the pull aborts and nothing else runs.
-   If the pull changed `gyoza.config.ts`, the config is reloaded and re-validated
-   here, so every later step uses the new values (a renamed `deploy.service`,
-   new build steps, …). Only then, if `deploy.service` is still unset, it asks
-   whether to finish without a restart — so pushing a config that adds the
-   service and deploying it works in one run. Declining leaves the pull in
-   place; a re-run picks up from there.
 3. **Install.** Runs `bun install` only if `bun.lock` is among the pulled changes.
    If that install changed gyoza's own version, the rest of the deploy is handed
    to the newly installed gyoza (see [Self-update during a deploy](#self-update-during-a-deploy)).
+   If the pull changed `gyoza.config.ts`, the config is reloaded and re-validated
+   **after** the install, by the gyoza that will run the rest of the deploy. That
+   way a config that uses a feature of the gyoza version `bun.lock` brings in is
+   never rejected by the older one. Every later step uses the new values (a
+   renamed `deploy.service`, new build steps, …). Only then, if `deploy.service`
+   is still unset, it asks whether to finish without a restart, so pushing a
+   config that adds the service and deploying it works in one run. Declining
+   leaves the pull and install in place; a re-run picks up from there.
 4. **Server preflight.** Runs `deploy.preflight`, if it is configured: what the
    OS must provide for the app (see [Server preflight](#server-preflight)). When
    `deploy.service` is set, gyoza adds its own restart checks. A failing check
@@ -433,9 +435,19 @@ It compares the commit in bun's `.bun-tag` file, or the `version` if that file
 is missing. If the install changed, it starts the new
 `node_modules/gyoza/cli.ts` with the pulled range (`<from>..<to>`) and `--yes`,
 if you passed it, plus `--skip-preflight` if the new version understands it. It
-then exits with that process's exit code. The new process picks up at
-**Server preflight**, with a fresh config load. The pull, the install and
-the no-restart confirmation already happened, so it doesn't repeat them.
+then exits with that process's exit code. The new process loads and validates
+the pulled config itself, asks about an unset `deploy.service`, and picks up at
+**Server preflight**. The pull and the install already happened, so it doesn't
+repeat them.
+
+- Up to 0.16.0, the old gyoza validated a pulled `gyoza.config.ts` **before**
+  installing. A config that used a feature of the incoming gyoza was rejected,
+  and the deploy stopped with the pull applied but not installed. Run
+  `bun install`, then `gyoza deploy` again. This can still happen on the deploy
+  that upgrades a server *from* 0.16.0 or older, since that deploy runs the old
+  code.
+- A parent from 0.13.0–0.16.0 asks about an unset `deploy.service` before
+  handing off, so the new gyoza asks a second time.
 
 ```text
 📦  bun.lock changed — running bun install...
@@ -473,7 +485,7 @@ the no-restart confirmation already happened, so it doesn't repeat them.
 | Situation | Result |
 | --- | --- |
 | `deploy` config malformed (numeric `service`, empty `migrate`, …) | Exit 1 before anything is pulled |
-| Pulled `gyoza.config.ts` has a malformed `deploy` block | Exit 1 after the pull, before install — the service is **not** restarted |
+| Pulled `gyoza.config.ts` has a malformed `deploy` block | Exit 1 after the pull and install, before preflight — the service is **not** restarted |
 | `cwd` is not a git work tree, or HEAD is detached | Exit 1 |
 | Working tree has uncommitted changes | Exit 1 — commit or stash first |
 | `deploy.service` / `deploy.migrate` unset in a non-interactive shell | Exit 1 naming the field and `--yes` |

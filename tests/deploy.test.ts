@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadConfig, validateDeployConfig } from '../src/config.ts';
@@ -444,6 +444,43 @@ describe('runDeploy --dry', () => {
     expect(out).toContain('Preflight failed (1 check)');
     // migrate would have failed on the missing script — it never ran.
     expect(out).not.toContain('db:migrate-not-a-script');
+  });
+
+  test('a pulled config is validated after bun install, not before', async () => {
+    // Regression: the pulled config was validated before the install, so a config
+    // using a feature of the gyoza that bun.lock brings in was rejected by the old one.
+    writeFileSync(join(work, 'package.json'), '{ "name": "fixture", "scripts": {} }\n');
+    writeFileSync(join(work, 'gyoza.config.ts'), 'export default {};\n');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-m', 'project');
+    git(work, 'push', 'origin', 'main');
+
+    const other = mkdtempSync(join(tmpdir(), 'gyoza-deploy-other-'));
+    try {
+      git(other, 'clone', remote, '.');
+      // A local workspace gives bun a real lockfile to write without touching the
+      // network. With no dependencies at all, bun deletes the lockfile.
+      mkdirSync(join(other, 'pkg'));
+      writeFileSync(join(other, 'pkg', 'package.json'), '{ "name": "pkg", "version": "1.0.0" }\n');
+      writeFileSync(join(other, 'package.json'), '{ "name": "fixture", "workspaces": ["pkg"], "scripts": {} }\n');
+      execFileSync('bun', ['install'], { cwd: other, stdio: 'pipe' });
+      rmSync(join(other, 'node_modules'), { recursive: true, force: true });
+      writeFileSync(join(other, 'gyoza.config.ts'), 'export default { deploy: { service: 3 } };\n');
+      git(other, 'add', '-A');
+      git(other, 'commit', '-m', 'lockfile + config this gyoza rejects');
+      git(other, 'push', 'origin', 'main');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+
+    process.chdir(work);
+    const { out, exitCode } = await captureRun(['-y']);
+
+    expect(exitCode).toBe(1);
+    const install = out.indexOf('running bun install');
+    const invalid = out.indexOf('Invalid deploy config');
+    expect(install).toBeGreaterThan(-1);
+    expect(invalid).toBeGreaterThan(install);
   });
 
   test('--skip-preflight goes straight to migrate', async () => {

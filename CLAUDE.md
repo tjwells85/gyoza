@@ -565,6 +565,8 @@ Before considering the initial implementation complete:
       unit, not the old one
 - [ ] a pull whose `bun.lock` moves gyoza to a new version prints the handoff line,
       and migrate/build/restart run in the new gyoza; `-y` is carried over
+- [ ] a pull carrying both a gyoza bump in `bun.lock` and a config that only the new
+      gyoza accepts deploys in one run: install first, then the new gyoza validates
 - [ ] `deploy.preflight` runs after `bun install` and before migrate; after a handoff
       it runs once, in the new gyoza
 - [ ] a failing `onFail: 'fail'` preflight entry exits 1 after every entry has been
@@ -1040,11 +1042,20 @@ nonexistent unit, and `runBuild`'s own `loadConfig` call ran stale build steps.
 `loadConfig` imports `gyoza.config.ts?v=<content hash>`, so every call reflects the
 file on disk; unchanged content reuses the cached module. When the pulled diff
 contains the root `gyoza.config.ts`, `runDeploy` reloads and re-validates the
-`deploy` block. The unset-`deploy.service` prompt runs only after that reload
-(and before the install, since a handoff child skips it), so a pull that adds the
-service is never asked about. Declining or a no-TTY abort happens after the pull;
-that's fine because an up-to-date deploy still builds and restarts. Modules the
-config imports are not re-evaluated — documented, not fixed.
+`deploy` block. The unset-`deploy.service` prompt runs only after that reload, so
+a pull that adds the service is never asked about. Declining or a no-TTY abort
+happens after the pull; that's fine because an up-to-date deploy still builds and
+restarts. Modules the config imports are not re-evaluated — documented, not fixed.
+
+**The reload happens after `bun install`, never before.** A pulled config may use
+a feature of the gyoza that the pulled `bun.lock` brings in, and the running gyoza's
+validator rejects it. 0.15.1 → 0.16.0 hit exactly this with a function
+`version.probe`: the deploy stopped after the pull and before the install. When
+the install moves gyoza, the parent hands off **without** reloading. The child
+loads the config at the top of `runDeploy`, validates it with its own rules, and
+runs `confirmNoService` in the resume path. Parents from 0.13.0–0.16.0 asked
+before handing off, so with them an unset service is asked twice. That is
+accepted rather than adding a flag to the `RESUME_FLAG` contract.
 
 ### Self-update handoff after install
 
@@ -1055,9 +1066,10 @@ install (`gyozaPackageDir()`, exported from `upgrade.ts`) before and after the
 install: the commit from bun's `.bun-tag` (`tjwells85-gyoza-03d9105`, via
 `readGyozaCommit`) and the `package.json` version. If it moved, `runDeploy` spawns
 `bun <packageDir>/cli.ts deploy --resume-after-install=<from>..<to> [--yes]`
-and exits with the child's code. The resumed run skips the preflight, pull,
-install and `confirmNoService` (all done in the parent) and goes straight to
-`finishDeploy` (migrate → build → restart). This is the second place gyoza
+and exits with the child's code. The resumed run skips the git checks, pull and
+install (done in the parent), loads the pulled config itself, runs
+`confirmNoService`, and goes to `finishDeploy` (preflight → migrate → build →
+restart). This is the second place gyoza
 resolves against `import.meta.dir`, and it only asks whether gyoza replaced
 itself.
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.16.1] - 2026-11-18
+
+### Fixed
+
+- A deploy that pulled a gyoza upgrade in `bun.lock` together with a
+  `gyoza.config.ts` using the new version's features failed after the pull. The
+  old gyoza validated the pulled config **before** running `bun install`,
+  rejected what it didn't know, and stopped with the new gyoza never installed
+  - The pulled config is now reloaded after the install. When the install
+    replaces gyoza, the new gyoza loads and validates it after the handoff
+  - The question about an unset `deploy.service` moved with it. A handoff
+    from 0.13.0–0.16.0 asks it twice
+  - The deploy that upgrades a server **from** 0.16.0 or older still runs the
+    old order. If it stops on an invalid config, run `bun install` and then
+    `gyoza deploy` again
+
 ## [0.16.0] - 2026-11-18
 
 ### Added

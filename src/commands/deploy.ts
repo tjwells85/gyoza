@@ -417,10 +417,14 @@ const runDeploy = async (args: string[]): Promise<void> => {
     if (branchOut.exitCode !== 0) fail('Could not determine the current branch.');
     const branch = currentBranch(branchOut.stdout);
 
-    // Handed off by the previous gyoza after bun install replaced it. The pull,
-    // install, and no-service confirmation already happened in that process.
+    // Handed off by the previous gyoza after bun install replaced it. The pull and
+    // install already happened there. `deploy` was loaded above, so the pulled
+    // config is validated by this gyoza, not the one that pulled it.
     if (resume) {
       console.log(`\n🔁  Resuming deploy in gyoza ${describeInstall(readGyozaInstall(gyozaPackageDir()))}...`);
+      // Since 0.16.1 the parent no longer asks this before handing off. A parent from
+      // 0.13.0–0.16.0 already asked, so an unset service is asked twice with those.
+      if (deploy.service === undefined) await confirmNoService(yes);
       const diff = await diffRefs(cwd, resume.fromRef, resume.toRef);
       await finishDeploy(cwd, deploy, branch, diff, resume.fromRef, resume.toRef, { yes, skipPreflight });
       return;
@@ -462,16 +466,9 @@ const runDeploy = async (args: string[]): Promise<void> => {
     // No new commits is not a reason to stop — deploy doubles as "rebuild and restart".
     if (before === after) console.log('\n·  Already up to date — rebuilding and restarting anyway.');
 
-    // Everything past the pull must run against the config it brought in.
-    if (changes.configChanged) {
-      console.log('\n🔁  gyoza.config.ts changed — reloading config...');
-      deploy = await loadDeployConfig(cwd);
-    }
-
-    // After the reload, so a service added by this pull counts. Before the
-    // install, because a handed-off child skips this question.
-    if (deploy.service === undefined) await confirmNoService(yes);
-
+    // The pulled config is reloaded only after the install below. It may use
+    // features of the gyoza that bun.lock brings in, and this gyoza would reject
+    // them as invalid. When the install replaces gyoza, the new one loads it.
     if (changes.lockChanged) {
       // The running gyoza's own package — not cwd — since the question is whether
       // this install is about to replace the code doing the deploy.
@@ -501,6 +498,15 @@ const runDeploy = async (args: string[]): Promise<void> => {
     } else {
       console.log('\n·  bun.lock unchanged — skipping bun install.');
     }
+
+    // Everything past this point must run against the config the pull brought in.
+    if (changes.configChanged) {
+      console.log('\n🔁  gyoza.config.ts changed — reloading config...');
+      deploy = await loadDeployConfig(cwd);
+    }
+
+    // After the reload, so a service added by this pull counts.
+    if (deploy.service === undefined) await confirmNoService(yes);
 
     await finishDeploy(cwd, deploy, branch, diff, before, after, { yes, skipPreflight });
   } catch (err) {
