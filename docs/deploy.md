@@ -244,10 +244,42 @@ different `onFail`. `run` receives the
 - `services`: the normalized `deploy.service` units.
 - `exec(cmd, { timeoutMs? })`: runs a command with a 10 s default timeout and never
   throws. A string runs through `sh -c`.
+- `serverEnv` / `frontendEnv`: the project's env (see below).
 
 `run` returns `true` / `false`, or `{ ok, detail }` to put the measured value in
-the report. A thrown error counts as a failure, with the error's message as the
-detail. Each check is limited to 30 s.
+the report. It can also return **another check**, which then runs with the same
+context. That form lets a built-in check use a value from the env. A thrown error
+counts as a failure, with the error's message as the detail. Each check is
+limited to 30 s.
+
+### Checks that read the env
+
+Paths, ports and hosts often live in the project's `.env` rather than in
+`gyoza.config.ts`. Read them from the context and return a built-in check:
+
+```ts
+checks: {
+  media: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT),
+  space: { run: (ctx) => check.freeSpace(ctx.serverEnv.STORAGE_ROOT, '20GB'), onFail: 'warn' },
+  port:  (ctx) => check.portFree(Number(ctx.serverEnv.PORT)),
+},
+```
+
+- `serverEnv` is `server/.env`, layered over the `.default()` values in
+  `server/env.ts`. A variable that only has a default still resolves.
+- `frontendEnv` is `frontend/.env`.
+- Values are what the app sees. gyoza removes an `export` prefix, surrounding
+  quotes, and a trailing `# comment` after an unquoted value. Every value is a
+  string, so convert it where a number is needed.
+- **Reading a variable that isn't set throws**, so the check fails with
+  `✗ media  STORAGE_ROOT is not set in server/.env`. Without this, a missing
+  variable would quietly become `check.mounted(undefined)`. To handle an
+  optional variable, test for it first:
+  `'BACKUP_ROOT' in ctx.serverEnv ? check.mounted(ctx.serverEnv.BACKUP_ROOT) : true`.
+- The `.env` files are read from disk when the preflight runs, which is after the
+  pull. They are usually gitignored, so a pull doesn't change them, but a pulled
+  `server/env.ts` can change the defaults.
+- `deps` functions (`exists`, `version.get`) get the same context.
 
 Checks should be **read-only**, because `--dry` runs them too.
 

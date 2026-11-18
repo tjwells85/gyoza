@@ -383,12 +383,17 @@ type VersionSpec =
   | string                                         // semver range, e.g. '>=15'
   | { range: string; probe?: string | string[]; match?: string | RegExp; get?: (ctx) => string | undefined };
 
-type PreflightCheckFn = (ctx: PreflightContext) => boolean | { ok: boolean; detail?: string } | Promise<…>;
+// A result, or another check to run with the same ctx: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)
+type PreflightCheckFn = (ctx: PreflightContext) =>
+  boolean | { ok: boolean; detail?: string } | PreflightCheckFn | Promise<…>;
 interface PreflightCheck { name?: string; run: PreflightCheckFn; onFail?: 'warn' | 'fail' }
 
 interface PreflightContext extends DeployMigrateContext {
   services: string[];                              // normalized deploy.service units
   exec: (cmd: string | string[], opts?: { timeoutMs?: number }) => Promise<ExecResult>;
+  serverEnv: Readonly<Record<string, string>>;     // server/.env over server/env.ts defaults
+  frontendEnv: Readonly<Record<string, string>>;   // frontend/.env
+  // Reading an unset UPPER_CASE key throws: "STORAGE_ROOT is not set in server/.env"
 }
 ```
 

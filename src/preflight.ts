@@ -24,13 +24,31 @@ export interface ExecResult {
  */
 export type PreflightExec = (cmd: string | string[], opts?: { timeoutMs?: number }) => Promise<ExecResult>;
 
+/**
+ * Values from a project `.env`. Reading an unset `UPPER_CASE` key **throws**
+ * (`STORAGE_ROOT is not set in server/.env`), so a check fails with that message
+ * rather than running against `undefined`. Test with `'KEY' in env` for optional keys.
+ */
+export type ProjectEnv = Readonly<Record<string, string>>;
+
 export interface PreflightContext extends DeployMigrateContext {
   /** `deploy.service`, normalized to `.service` unit names. Empty when unset. */
   services: string[];
   exec: PreflightExec;
+  /** `server/.env`, over the `.default()` values in `server/env.ts`. */
+  serverEnv: ProjectEnv;
+  /** `frontend/.env`. */
+  frontendEnv: ProjectEnv;
 }
 
-export type PreflightCheckFn = (ctx: PreflightContext) => CheckResult | Promise<CheckResult>;
+/**
+ * A check's result, or another check to run with the same context. The second
+ * form is what lets a check read the env first:
+ * `media: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)`.
+ */
+export type PreflightCheckReturn = CheckResult | PreflightCheckFn;
+
+export type PreflightCheckFn = (ctx: PreflightContext) => PreflightCheckReturn | Promise<PreflightCheckReturn>;
 
 export interface PreflightCheck {
   /** Label in the report. Defaults to the key. */
@@ -236,6 +254,45 @@ export const satisfiesRange = (version: string, range: string): boolean => {
 };
 
 // ---------------------------------------------------------------------------
+// Project env
+// ---------------------------------------------------------------------------
+
+/**
+ * `parseEnvFile` keeps values exactly as written, which `generate env` needs to
+ * write them back. A check needs the value the app sees: no `export ` prefix, no
+ * surrounding quotes, no trailing ` # comment` on an unquoted value.
+ */
+export const cleanEnvEntries = (raw: Record<string, string>): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(raw)) {
+    const key = rawKey.replace(/^export\s+/, '').trim();
+    let value = rawValue.trim();
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.length >= 2 && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, '');
+    }
+    env[key] = value;
+  }
+  return env;
+};
+
+/** Env-var-shaped keys only. Inspection keys (`then`, `toJSON`, …) read as normal. */
+const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
+
+/** See {@link ProjectEnv}: reading an unset env key throws, naming `source`. */
+export const strictEnv = (values: Record<string, string>, source: string): ProjectEnv =>
+  new Proxy(Object.freeze({ ...values }), {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && ENV_KEY.test(key) && !(key in target)) {
+        throw new Error(`${key} is not set in ${source}`);
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+
+// ---------------------------------------------------------------------------
 // Libraries
 // ---------------------------------------------------------------------------
 
@@ -387,6 +444,9 @@ const guard = async (work: () => DepResult | Promise<DepResult>, ms = CHECK_TIME
 };
 
 const normalizeCheckResult = (result: unknown): DepResult => {
+  if (typeof result === 'function') {
+    return { ok: false, detail: 'returned a check that returned another check — return a result or one check' };
+  }
   if (typeof result === 'boolean') return { ok: result, detail: result ? 'ok' : 'failed' };
   if (typeof result === 'object' && result !== null && typeof (result as { ok?: unknown }).ok === 'boolean') {
     const { ok, detail } = result as { ok: boolean; detail?: unknown };
@@ -410,7 +470,11 @@ export const evaluatePreflight = async (
 
   for (const [key, entry] of Object.entries(config.checks ?? {})) {
     const check = typeof entry === 'function' ? { run: entry } : entry;
-    const result = await guard(async () => normalizeCheckResult(await check.run(ctx)));
+    const result = await guard(async () => {
+      const first = await check.run(ctx);
+      // One level only: a check that returns a check is a factory call, deeper is a mistake.
+      return normalizeCheckResult(typeof first === 'function' ? await first(ctx) : first);
+    });
     outcomes.push({ label: check.name ?? key, onFail: check.onFail ?? 'fail', ...result });
   }
 

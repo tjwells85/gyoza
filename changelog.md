@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.15.0] - 2026-11-17
+
+### Added
+
+- `deploy.preflight` checks can read the project env through `ctx.serverEnv`
+  and `ctx.frontendEnv`. See
+  [docs/deploy.md](docs/deploy.md#checks-that-read-the-env)
+  - `serverEnv` is `server/.env`, layered over the `.default()` values in
+    `server/env.ts`, so a variable that only has a default still resolves.
+    `frontendEnv` is `frontend/.env`
+  - Values are cleaned the way the app sees them: no `export` prefix,
+    surrounding quotes or trailing comment
+  - Reading a variable that isn't set fails the check with
+    `STORAGE_ROOT is not set in server/.env`, instead of running it against
+    `undefined`
+- A check can return another check, which runs with the same context. This
+  lets a built-in check take a value from the env:
+  `media: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)`
+
 ## [0.14.0] - 2026-11-17
 
 ### Added

@@ -28,6 +28,8 @@ defineConfig({
         port: check.portFree(3000),
         custom: { name: 'Uploads writable', run: async ({ exec }) => (await exec('test -w /mnt/media')).exitCode === 0 },
         detailed: () => ({ ok: true, detail: 'fine' }),
+        fromEnv: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT),
+        fromEnvAsync: { run: async ({ frontendEnv }) => check.freeSpace(frontendEnv.PUBLIC_UPLOADS, '1GB'), onFail: 'warn' },
       },
     },
   },

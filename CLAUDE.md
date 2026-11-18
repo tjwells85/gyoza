@@ -53,6 +53,7 @@ gyoza/
     ├── version.ts          ← bun info resolution, semver compare, release-age gate
     ├── preflight.ts        ← deploy.preflight types, version probes, runner, validation
     ├── checks.ts           ← built-in `check.*` preflight factories
+    ├── projectEnv.ts       ← server/frontend .env loader for preflight ctx
     ├── prompt.ts           ← shared Y/n confirmation
     └── commands/
         ├── index.ts        ← registry root (assembles all groups)
@@ -574,6 +575,9 @@ Before considering the initial implementation complete:
 - [ ] an invalid range (`'garbage'`), two sources, or `library` + `version` aborts
       before the pull
 - [ ] `check.portFree(<service port>)` passes while the service being deployed is up
+- [ ] `(ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)` uses the `server/.env`
+      value, falls back to the `server/env.ts` default, and fails naming the var when
+      neither is set
 - [ ] `check.freeSpace` / `check.mounted` against a hung NFS share fail within the
       timeout instead of hanging
 - [ ] `gyoza generate env` with a stub `vite.config.ts` + `rsbuild.config.ts` and only
@@ -1089,6 +1093,21 @@ in `src/checks.ts`, exported as `check`). User docs: [docs/deploy.md](docs/deplo
 - **Factories must not throw at config load.** `loadConfig` swallows import errors and
   falls back to the default config, silently dropping the whole preflight. Parse
   arguments inside the returned check (see `freeSpace`).
+- **`ctx.serverEnv` / `ctx.frontendEnv`** come from `loadProjectEnv`
+  (`src/projectEnv.ts`). `serverEnv` is `server/.env` over the `.default()`
+  values from `parseEnvTs`, because a defaulted field is commented out in `.env`
+  and would otherwise read as unset. It reuses `parseEnvFile`, but values go
+  through `cleanEnvEntries` (unquote, drop `export ` and the inline comment).
+  `parseEnvFile` itself must keep raw values, since `generate env` writes them back.
+  It lives outside `preflight.ts` on purpose: `preflight.ts` → `generate/env.ts` →
+  `config.ts` → `preflight.ts` would be an import cycle.
+- **`strictEnv` throws on an unset key** so `check.mounted(ctx.serverEnv.X)` fails
+  as `X is not set in server/.env`, not as a check against `undefined`. It only throws
+  for `UPPER_CASE` keys. `then`, `toJSON` and the rest still read as `undefined`,
+  otherwise awaiting or serializing the object would throw.
+- **A check may return a check** (`(ctx) => check.mounted(…)`), which is run with
+  the same ctx. This is one level only, and a third level is a failure. That's
+  why the env-reading form needed no new shape.
 - `--dry` runs the pre-pull preflight (checks are read-only by contract) and exits 0.
 - `--skip-preflight` is forwarded on a handoff only to a child at or above
   `PREFLIGHT_SINCE` (`handoffArgs`); an older child would reject it, and has no

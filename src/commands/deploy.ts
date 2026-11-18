@@ -5,6 +5,7 @@ import type { DeployConfig, DeployMigrateContext } from '../config.ts';
 import type { CommandFlag } from '../gyoza.ts';
 import { createExec, hasPreflight, runPreflight } from '../preflight.ts';
 import type { PreflightSummary } from '../preflight.ts';
+import { loadProjectEnv } from '../projectEnv.ts';
 import { confirm } from '../prompt.ts';
 import { compareVersions } from '../version.ts';
 import { readPackageJson, rootPackagePath } from '../workspaces.ts';
@@ -244,6 +245,7 @@ const runPreflightStep = async (
   console.log(`\n🔎  ${heading}`);
   return runPreflight(deploy.preflight, {
     ...refs,
+    ...loadProjectEnv(cwd),
     services: deploy.service === undefined ? [] : normalizeServices(deploy.service),
     exec: createExec(cwd),
   });

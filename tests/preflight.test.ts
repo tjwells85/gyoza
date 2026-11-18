@@ -1,5 +1,10 @@
 import { describe, test, expect, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadProjectEnv } from '../src/projectEnv.ts';
 import {
+  cleanEnvEntries,
   coerceVersion,
   evaluatePreflight,
   extractVersion,
@@ -8,6 +13,7 @@ import {
   isValidRange,
   reportPreflight,
   satisfiesRange,
+  strictEnv,
   validatePreflightConfig,
 } from '../src/preflight.ts';
 import type {
@@ -46,13 +52,19 @@ const fakeExec =
 
 const fakeEnv = (paths: Record<string, string>): PreflightEnv => ({ which: (cmd) => paths[cmd] ?? null });
 
-const ctxWith = (exec: PreflightExec, services: string[] = []): PreflightContext => ({
+const ctxWith = (
+  exec: PreflightExec,
+  services: string[] = [],
+  serverEnv: Record<string, string> = {},
+): PreflightContext => ({
   projectRoot: '/srv/app',
   changedFiles: [],
   fromRef: 'a1b2c3d',
   toRef: 'e4f5a6b',
   services,
   exec,
+  serverEnv: strictEnv(serverEnv, 'server/.env'),
+  frontendEnv: strictEnv({}, 'frontend/.env'),
 });
 
 // ---------------------------------------------------------------------------
@@ -318,6 +330,29 @@ describe('evaluatePreflight checks', () => {
     expect(outcome?.detail).toContain('expected a boolean or { ok }');
   });
 
+  test('a check may return a check, which runs with the same context', async () => {
+    const exec = fakeExec({ 'df -B1 --output=avail /mnt/media': ok(`Avail\n${30 * 1024 ** 3}\n`) });
+    const [outcome] = await evaluatePreflight(
+      { checks: { space: (ctx) => check.freeSpace(ctx.serverEnv.STORAGE_ROOT, '1GiB') } },
+      ctxWith(exec, [], { STORAGE_ROOT: '/mnt/media' }),
+    );
+    expect(outcome).toMatchObject({ ok: true, detail: '30.0 GiB free at /mnt/media, need 1.0 GiB' });
+  });
+
+  test('an unset env var fails the check, naming the var and the file', async () => {
+    const [outcome] = await evaluatePreflight(
+      { checks: { media: (ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT) } },
+      ctxWith(fakeExec({})),
+    );
+    expect(outcome).toMatchObject({ ok: false, detail: 'STORAGE_ROOT is not set in server/.env' });
+  });
+
+  test('a check returning a check returning a check is an error, not a pass', async () => {
+    const [outcome] = await evaluatePreflight({ checks: { deep: () => () => () => true } }, ctxWith(fakeExec({})));
+    expect(outcome?.ok).toBe(false);
+    expect(outcome?.detail).toContain('returned another check');
+  });
+
   test('deps report before checks', async () => {
     const outcomes = await evaluatePreflight(
       { checks: { c: () => true }, deps: { d: { exists: () => true } } },
@@ -362,6 +397,100 @@ describe('hasPreflight', () => {
     expect(hasPreflight({})).toBe(false);
     expect(hasPreflight({ deps: {}, checks: {} })).toBe(false);
     expect(hasPreflight({ checks: { a: () => true } })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Project env
+// ---------------------------------------------------------------------------
+
+describe('cleanEnvEntries', () => {
+  test('strips export, matching quotes, and trailing comments on unquoted values', () => {
+    expect(
+      cleanEnvEntries({
+        'export STORAGE_ROOT': '/mnt/media',
+        QUOTED: '"/mnt/my share"',
+        SINGLE: "'a # not a comment'",
+        COMMENTED: '/mnt/x   # the share',
+        HASH: 'abc#def',
+        EMPTY: '',
+      }),
+    ).toEqual({
+      STORAGE_ROOT: '/mnt/media',
+      QUOTED: '/mnt/my share',
+      SINGLE: 'a # not a comment',
+      COMMENTED: '/mnt/x',
+      HASH: 'abc#def',
+      EMPTY: '',
+    });
+  });
+});
+
+describe('strictEnv', () => {
+  const env = strictEnv({ PORT: '3000', EMPTY: '' }, 'server/.env');
+
+  test('reads set keys, including empty ones', () => {
+    expect(env.PORT).toBe('3000');
+    expect(env.EMPTY).toBe('');
+  });
+
+  test('an unset env key throws, naming the file', () => {
+    expect(() => env.STORAGE_ROOT).toThrow('STORAGE_ROOT is not set in server/.env');
+  });
+
+  test('`in` works for optional keys, and inspection keys do not throw', () => {
+    expect('PORT' in env).toBe(true);
+    expect('STORAGE_ROOT' in env).toBe(false);
+    expect((env as Record<string, unknown>).then).toBeUndefined();
+    expect(JSON.stringify(env)).toBe('{"PORT":"3000","EMPTY":""}');
+  });
+
+  test('is read-only', () => {
+    expect(() => {
+      (env as Record<string, string>).PORT = '1';
+    }).toThrow();
+  });
+});
+
+describe('loadProjectEnv', () => {
+  test('server/.env overrides server/env.ts defaults; frontend reads frontend/.env', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gyoza-preflight-env-'));
+    try {
+      mkdirSync(join(dir, 'server'));
+      mkdirSync(join(dir, 'frontend'));
+      writeFileSync(
+        join(dir, 'server/env.ts'),
+        [
+          "import { z } from 'zod';",
+          'export const env = z.object({',
+          "  STORAGE_ROOT: z.string().default('/mnt/media'),",
+          "  PORT: z.coerce.number().default(3000),",
+          '  DB_URL: z.string(),',
+          '}).parse(process.env);',
+        ].join('\n'),
+      );
+      writeFileSync(join(dir, 'server/.env'), '# STORAGE_ROOT=/mnt/media\nPORT="4000"\nDB_URL=postgres://x\n');
+      writeFileSync(join(dir, 'frontend/.env'), 'PUBLIC_API=/api\n');
+
+      const { serverEnv, frontendEnv } = loadProjectEnv(dir);
+      expect(serverEnv.STORAGE_ROOT).toBe('/mnt/media'); // from the default
+      expect(serverEnv.PORT).toBe('4000'); // .env wins, quotes stripped
+      expect(serverEnv.DB_URL).toBe('postgres://x');
+      expect(frontendEnv.PUBLIC_API).toBe('/api');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('missing files give empty envs, not errors', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gyoza-preflight-env-'));
+    try {
+      const { serverEnv, frontendEnv } = loadProjectEnv(dir);
+      expect(Object.keys(serverEnv)).toEqual([]);
+      expect(Object.keys(frontendEnv)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

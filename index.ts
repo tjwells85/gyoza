@@ -30,10 +30,12 @@ export type {
   PkgConfigDep,
   PreflightCheck,
   PreflightCheckFn,
+  PreflightCheckReturn,
   PreflightConfig,
   PreflightContext,
   PreflightDep,
   PreflightExec,
+  ProjectEnv,
   SingleDep,
   VersionSpec,
 } from './src/preflight.ts';
