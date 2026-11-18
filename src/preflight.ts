@@ -31,12 +31,28 @@ export type PreflightExec = (cmd: string | string[], opts?: { timeoutMs?: number
  */
 export type ProjectEnv = Readonly<Record<string, string>>;
 
+/** An interface's declared keys, without its index signatures. */
+type DeclaredKeys<T> = keyof { [K in keyof T as string extends K ? never : number extends K ? never : K]: unknown } & string;
+
+type ServerEnvKey = DeclaredKeys<Bun.Env>;
+
+/**
+ * `ctx.serverEnv`, keyed by the project's `Bun.Env` augmentation (the
+ * `declare module 'bun' { interface Env extends ServerEnv … }` block in `server/env.ts`).
+ * Values stay `string`: they are the raw `.env` text, never Zod output, so a
+ * `z.coerce.number()` field is still `'3000'`. Bun declares `NODE_ENV` and `TZ`
+ * itself, so with nothing else declared this falls back to {@link ProjectEnv}.
+ */
+export type PreflightServerEnv = [Exclude<ServerEnvKey, 'NODE_ENV' | 'TZ'>] extends [never]
+  ? ProjectEnv
+  : { readonly [K in ServerEnvKey]: string };
+
 export interface PreflightContext extends DeployMigrateContext {
   /** `deploy.service`, normalized to `.service` unit names. Empty when unset. */
   services: string[];
   exec: PreflightExec;
-  /** `server/.env`, over the `.default()` values in `server/env.ts`. */
-  serverEnv: ProjectEnv;
+  /** `server/.env`, over the `.default()` values in `server/env.ts`. Typed from `Bun.Env`, see {@link PreflightServerEnv}. */
+  serverEnv: PreflightServerEnv;
   /** `frontend/.env`. */
   frontendEnv: ProjectEnv;
 }

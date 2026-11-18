@@ -35,6 +35,7 @@ export type {
   PreflightContext,
   PreflightDep,
   PreflightExec,
+  PreflightServerEnv,
   ProjectEnv,
   SingleDep,
   VersionProbeFn,

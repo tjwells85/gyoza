@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": ["."],
+  // The root config excludes this directory; don't inherit that.
+  "exclude": []
+}

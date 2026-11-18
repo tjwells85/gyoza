@@ -17,5 +17,7 @@
     "noUncheckedIndexedAccess": false,
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true
-  }
+  },
+  // Augments Bun.Env globally; checked as its own program by tests/env-types.test.ts.
+  "exclude": ["node_modules", "tests/env-types"]
 }

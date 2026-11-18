@@ -396,7 +396,7 @@ interface PreflightCheck { name?: string; run: PreflightCheckFn; onFail?: 'warn'
 interface PreflightContext extends DeployMigrateContext {
   services: string[];                              // normalized deploy.service units
   exec: (cmd: string | string[], opts?: { timeoutMs?: number }) => Promise<ExecResult>;
-  serverEnv: Readonly<Record<string, string>>;     // server/.env over server/env.ts defaults
+  serverEnv: PreflightServerEnv;                   // server/.env over server/env.ts defaults; keys from Bun.Env, values string
   frontendEnv: Readonly<Record<string, string>>;   // frontend/.env
   // Reading an unset UPPER_CASE key throws: "STORAGE_ROOT is not set in server/.env"
 }

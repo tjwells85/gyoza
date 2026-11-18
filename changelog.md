@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.0] - 2026-11-18
+
+### Added
+
+- `ctx.serverEnv` in `deploy.preflight` is typed from the `Bun.Env` block in
+  `server/env.ts`, so the editor autocompletes variable names and a typo is a
+  type error. Nothing to configure, and projects without the block get the same
+  untyped `serverEnv` as before. See
+  [docs/deploy.md](docs/deploy.md#typed-serverenv)
+  - Values are typed `string`, since they're the raw `.env` text. Convert a
+    number yourself: `Number(ctx.serverEnv.PORT)`
+  - Reading a variable the schema doesn't declare is now a type error. Cast to
+    `ProjectEnv` to read one anyway
+- `PreflightServerEnv` type export
+
 ## [0.16.1] - 2026-11-18
 
 ### Fixed

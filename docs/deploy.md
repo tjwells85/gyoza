@@ -373,6 +373,37 @@ checks: {
   `server/env.ts` can change the defaults.
 - `deps` functions (`exists`, `version.get`) get the same context.
 
+#### Typed `serverEnv`
+
+`ctx.serverEnv` gets its keys from the `Bun.Env` augmentation that the template
+puts at the bottom of `server/env.ts`:
+
+```ts
+declare module 'bun' {
+  interface Env extends ServerEnv {
+    [key: string]: string | undefined;
+  }
+}
+```
+
+With that block in place, the editor autocompletes the variable names, and a
+misspelled name is a type error instead of a failure at deploy time. Nothing in
+`gyoza.config.ts` changes. An older project without the block gets an untyped
+`serverEnv`; add the block to `server/env.ts` to get the names.
+
+- Every value is typed `string`, even when the schema says otherwise. gyoza
+  reads `.env` and never runs the Zod schema, so a
+  `z.coerce.number()` field is still `'3000'`. Convert it yourself:
+  `check.portFree(Number(ctx.serverEnv.PORT))`.
+- An optional field is typed `string` as well, because reading it when it's
+  unset throws. Test for it with `in` first, as above.
+- A variable the schema doesn't declare is a type error. To read one anyway,
+  cast: `(ctx.serverEnv as ProjectEnv).OTHER`.
+- The names only come through when `gyoza.config.ts` and `server/env.ts` are
+  checked by the same TypeScript program. The template's root `tsconfig.json`
+  has no `include`, so it covers both.
+- `frontendEnv` is untyped.
+
 Checks should be **read-only**, because `--dry` runs them too.
 
 ---

@@ -585,6 +585,8 @@ Before considering the initial implementation complete:
       the server version; a down server fails (never passes on an IP in the error)
       and the report masks the URL password
 - [ ] `check.writable(path)` fails on a missing or read-only directory
+- [ ] in a template project, `ctx.serverEnv.` autocompletes the `ServerEnv` keys in
+      `gyoza.config.ts` and a misspelled key is a type error
 - [ ] `(ctx) => check.mounted(ctx.serverEnv.STORAGE_ROOT)` uses the `server/.env`
       value, falls back to the `server/env.ts` default, and fails naming the var when
       neither is set
@@ -1133,6 +1135,18 @@ itself needs it, gyoza runs it instead (`restartChecks`), not the config.
   as `X is not set in server/.env`, not as a check against `undefined`. It only throws
   for `UPPER_CASE` keys. `then`, `toJSON` and the rest still read as `undefined`,
   otherwise awaiting or serializing the object would throw.
+- **`ctx.serverEnv` is typed from `Bun.Env`** (`PreflightServerEnv`). The keys are
+  the ones the project's `declare module 'bun'` block in `server/env.ts` declares,
+  and every value is `string`. The values are raw `.env` text, never Zod output.
+  Typing them as `ServerEnv` would call `'3000'` a number. Importing `server/env.ts`
+  to parse the env for real is out too: it runs `ServerEnv.parse(process.env)` at
+  import. Optional keys are `string`, not `string | undefined`, because `strictEnv`
+  throws on them and `?? fallback` would be a trap. If only Bun's own `NODE_ENV` /
+  `TZ` are declared, it falls back to `ProjectEnv`. A generic on `defineConfig`
+  was rejected: TypeScript has no partial inference, so `defineConfig<ServerEnv>`
+  would turn off `TPre` inference. The augmentation is global, so it's tested in
+  its own program (`tests/env-types/`, run by `tests/env-types.test.ts`), which
+  the root `tsconfig.json` excludes.
 - **`mounted` means "on a mounted filesystem", not "is a mount point".** Storage
   paths are almost always directories *inside* a share (`/mnt/apps/my-app` on
   `/mnt/apps`), and an exact-match test failed exactly that case. `findContainingMount`

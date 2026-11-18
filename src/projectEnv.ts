@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnvFile, parseEnvTs } from './commands/generate/env.ts';
 import { cleanEnvEntries, strictEnv } from './preflight.ts';
-import type { ProjectEnv } from './preflight.ts';
+import type { PreflightServerEnv, ProjectEnv } from './preflight.ts';
 
 /**
  * `.default()` values from `server/env.ts`. A field the app gets from its default
@@ -24,10 +24,11 @@ const serverDefaults = (projectRoot: string): Record<string, string> => {
 };
 
 /** `ctx.serverEnv` / `ctx.frontendEnv` for `deploy.preflight`. Read from disk on every call. */
-export const loadProjectEnv = (projectRoot: string): { serverEnv: ProjectEnv; frontendEnv: ProjectEnv } => ({
+export const loadProjectEnv = (projectRoot: string): { serverEnv: PreflightServerEnv; frontendEnv: ProjectEnv } => ({
+  // The keys are a compile-time promise from the project's Bun.Env; strictEnv throws for any that's unset.
   serverEnv: strictEnv(
     { ...serverDefaults(projectRoot), ...cleanEnvEntries(parseEnvFile(join(projectRoot, 'server/.env'))) },
     'server/.env',
-  ),
+  ) as PreflightServerEnv,
   frontendEnv: strictEnv(cleanEnvEntries(parseEnvFile(join(projectRoot, 'frontend/.env'))), 'frontend/.env'),
 });
